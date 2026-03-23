@@ -1,11 +1,55 @@
+# Dependencies
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
 dist/
-*.log
-.DS_Store
-.env
-*.sqlite
-*.db
+build/
 out/
-coverage/
+
+# Databases and data
+*.db
+*.sqlite
+*.sqlite3
+pubweb.db
+test.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
 .vscode/
+.idea/
 *.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Logging
+logs/
+*.log
+lerna-debug.log*
+pm2logs/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Misc
+.cache/
+dist/
+build/
+.turbo/
