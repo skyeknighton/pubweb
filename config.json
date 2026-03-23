@@ -1,0 +1,8 @@
+{
+  "domain": "pubweb.online",
+  "trackerUrl": "https://tracker.pubweb.online",
+  "peerPort": 3000,
+  "trackerPort": 4000,
+  "maxPageSize": 1048576,
+  "enableHttps": false
+}
