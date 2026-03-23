@@ -53,3 +53,10 @@ coverage/
 dist/
 build/
 .turbo/
+
+# Local SSH keys
+keys/
+*.pem
+*.ppk
+id_rsa
+id_ed25519

@@ -146,8 +146,8 @@ class Tracker {
       res.send(html);
     });
 
-    // Redirect to a peer holding the page for easy one-server fetch
-    this.app.get('/page/:hash', (req, res) => {
+    // Fetch from a peer and return content directly (works behind cPanel routing)
+    this.app.get('/page/:hash', async (req, res) => {
       const { hash } = req.params;
       const peerIds = this.pageIndex.get(hash);
       if (!peerIds || peerIds.size === 0) {
@@ -163,7 +163,14 @@ class Tracker {
       }
 
       const target = `http://${candidate.host}:${candidate.port}/page/${hash}`;
-      res.redirect(target);
+      try {
+        const upstream = await fetch(target);
+        const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+        const body = await upstream.text();
+        res.status(upstream.status).set('content-type', contentType).send(body);
+      } catch (err) {
+        res.status(502).json({ error: 'Failed to fetch page from peer', target });
+      }
     });
 
     // Get all peers
@@ -202,7 +209,7 @@ class Tracker {
 // Main
 const tracker = new Tracker();
 console.log('Starting tracker...');
-tracker.start(parseInt(process.env.TRACKER_PORT || '4000')).then(() => {
+tracker.start(parseInt(process.env.PORT || process.env.TRACKER_PORT || '4000')).then(() => {
   console.log('Tracker started successfully');
 }).catch(err => {
   console.error('Tracker failed to start:', err);
