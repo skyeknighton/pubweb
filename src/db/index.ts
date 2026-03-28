@@ -96,8 +96,28 @@ export class Database {
           Date.now(),
         ],
         (err) => {
-          if (err) reject(err);
-          else {
+          if (err) {
+            const isDuplicateHash = typeof err.message === 'string' && err.message.includes('UNIQUE constraint failed: pages.hash');
+            if (!isDuplicateHash) {
+              reject(err);
+              return;
+            }
+
+            this.db.get(
+              'SELECT id FROM pages WHERE hash = ?',
+              [hash],
+              (lookupErr, row: any) => {
+                if (lookupErr) {
+                  reject(lookupErr);
+                } else if (row?.id) {
+                  resolve(row.id);
+                } else {
+                  reject(err);
+                }
+              }
+            );
+            return;
+          } else {
             this.db.run(
               `INSERT INTO uploads (pageId, timestamp, bytes)
                VALUES (?, ?, ?)`,
@@ -148,6 +168,44 @@ export class Database {
               }))
             );
           }
+        }
+      );
+    });
+  }
+
+  async getPageHashes(limit: number = 500): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        'SELECT hash FROM pages ORDER BY created DESC LIMIT ?',
+        [limit],
+        (err, rows: Array<{ hash: string }>) => {
+          if (err) reject(err);
+          else resolve((rows || []).map((row) => row.hash));
+        }
+      );
+    });
+  }
+
+  async hasPageHash(hash: string): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        'SELECT 1 as found FROM pages WHERE hash = ? LIMIT 1',
+        [hash],
+        (err, row: any) => {
+          if (err) reject(err);
+          else resolve(!!row?.found);
+        }
+      );
+    });
+  }
+
+  async getStorageBytes(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        'SELECT COALESCE(SUM(LENGTH(html)), 0) as totalBytes FROM pages',
+        (err, row: any) => {
+          if (err) reject(err);
+          else resolve(row?.totalBytes || 0);
         }
       );
     });

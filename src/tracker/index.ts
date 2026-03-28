@@ -1,5 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
+import path from 'path';
+import { TrackerStore, PeerHeartbeatPayload } from './store';
 // import config from '../../config.json';
 
 interface TrackerEntry {
@@ -16,16 +18,103 @@ class Tracker {
   private app = express();
   private peers: Map<string, TrackerEntry> = new Map();
   private pageIndex: Map<string, Set<string>> = new Map();
+  private store: TrackerStore;
+  private replicationTarget: number;
 
   constructor() {
+    const dbPath = process.env.TRACKER_DB_PATH || path.join(process.cwd(), 'tracker.db');
+    this.store = new TrackerStore(dbPath);
+    this.replicationTarget = parseInt(process.env.REPLICATION_TARGET || '2', 10);
     this.setupRoutes();
+  }
+
+  private getPeerCandidate(hash: string): TrackerEntry | null {
+    const peerIds = this.pageIndex.get(hash);
+    if (!peerIds || peerIds.size === 0) {
+      return null;
+    }
+
+    const candidate = Array.from(peerIds)
+      .map((peerId) => this.peers.get(peerId))
+      .filter((p): p is TrackerEntry => !!p && Date.now() - p.lastSeen < 60000)[0];
+
+    return candidate || null;
+  }
+
+  private async resolvePage(hash: string): Promise<
+    | { status: 'ready'; html: string; contentType: string; target: string }
+    | { status: 'warming'; reason: string }
+    | { status: 'missing'; reason: string }
+  > {
+    const candidate = this.getPeerCandidate(hash);
+    if (!candidate) {
+      const known = this.pageIndex.has(hash);
+      return known
+        ? { status: 'warming', reason: 'Page hash exists, waiting for an active peer.' }
+        : { status: 'missing', reason: 'Page hash is not currently indexed by tracker.' };
+    }
+
+    const target = `http://${candidate.host}:${candidate.port}/page/${hash}`;
+    try {
+      const upstream = await fetch(target);
+      if (!upstream.ok) {
+        return { status: 'warming', reason: `Peer responded ${upstream.status}, retrying.` };
+      }
+
+      const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+      const html = await upstream.text();
+      return { status: 'ready', html, contentType, target };
+    } catch (err) {
+      return { status: 'warming', reason: 'Failed to reach active peer, retrying.' };
+    }
   }
 
   private setupRoutes() {
     this.app.use(express.json());
 
+    this.app.post('/v1/peer/heartbeat', async (req, res) => {
+      const payload = req.body as PeerHeartbeatPayload;
+      if (!payload?.peerId) {
+        return res.status(400).json({ error: 'Missing peerId' });
+      }
+
+      try {
+        await this.store.processHeartbeat(payload);
+        await this.store.generateAssignments(payload.peerId, 20, this.replicationTarget);
+        await this.store.pruneStalePeers(5 * 60 * 1000);
+
+        res.json({
+          serverTime: Date.now(),
+          nextHeartbeatSec: 60,
+          assignmentEtag: crypto.randomUUID(),
+        });
+      } catch (err) {
+        console.error('Heartbeat processing failed:', err);
+        res.status(500).json({ error: 'Failed to process heartbeat' });
+      }
+    });
+
+    this.app.get('/v1/peer/assignments', async (req, res) => {
+      const peerId = String(req.query.peerId || '').trim();
+      if (!peerId) {
+        return res.status(400).json({ error: 'Missing peerId query param' });
+      }
+
+      try {
+        const items = await this.store.getAssignments(peerId);
+        res.json({
+          etag: crypto.randomUUID(),
+          generatedAt: Date.now(),
+          items,
+        });
+      } catch (err) {
+        console.error('Assignment read failed:', err);
+        res.status(500).json({ error: 'Failed to get assignments' });
+      }
+    });
+
     // Register/update peer
-    this.app.post('/announce', (req, res) => {
+    this.app.post('/announce', async (req, res) => {
       const { peerId, host, port, pages, bytesUploaded, bytesDownloaded } = req.body;
 
       if (!peerId || !host || !port) {
@@ -45,12 +134,17 @@ class Tracker {
       this.peers.set(peerId, peer);
 
       // Update page index
-      pages?.forEach((pageHash: string) => {
+      for (const pageHash of pages || []) {
         if (!this.pageIndex.has(pageHash)) {
           this.pageIndex.set(pageHash, new Set());
         }
         this.pageIndex.get(pageHash)!.add(peerId);
-      });
+        try {
+          await this.store.upsertSite(pageHash, 1, 0);
+        } catch (err) {
+          console.warn('Failed to persist site from announce:', pageHash, err);
+        }
+      }
 
       res.json({ success: true, peerId });
     });
@@ -149,28 +243,105 @@ class Tracker {
     // Fetch from a peer and return content directly (works behind cPanel routing)
     this.app.get('/page/:hash', async (req, res) => {
       const { hash } = req.params;
-      const peerIds = this.pageIndex.get(hash);
-      if (!peerIds || peerIds.size === 0) {
-        return res.status(404).json({ error: 'Page not found on tracker' });
+      const resolved = await this.resolvePage(hash);
+      if (resolved.status === 'ready') {
+        return res
+          .status(200)
+          .set('content-type', resolved.contentType)
+          .set('x-pubweb-cache', 'WARMING')
+          .send(resolved.html);
       }
 
-      const candidate = Array.from(peerIds)
-        .map((peerId) => this.peers.get(peerId))
-        .filter((p): p is TrackerEntry => !!p && Date.now() - p.lastSeen < 60000)[0];
-
-      if (!candidate) {
-        return res.status(404).json({ error: 'No active peer currently available' });
+      if (resolved.status === 'missing') {
+        return res.status(404).json({ error: resolved.reason });
       }
 
-      const target = `http://${candidate.host}:${candidate.port}/page/${hash}`;
+      return res.status(202).json({ error: resolved.reason });
+    });
+
+    this.app.get('/resolve/:hash', async (req, res) => {
+      const { hash } = req.params;
+      const resolved = await this.resolvePage(hash);
+
+      if (resolved.status === 'ready') {
+        return res.json({ status: 'ready' });
+      }
+
+      if (resolved.status === 'missing') {
+        return res.status(404).json({ status: 'missing', reason: resolved.reason });
+      }
+
+      return res.status(202).json({ status: 'warming', reason: resolved.reason });
+    });
+
+    this.app.get('/:hash([a-fA-F0-9]{64})', (req, res) => {
+      const { hash } = req.params;
+      const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PubWeb Loading ${hash.slice(0, 12)}...</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #0b1220; color: #dbe7ff; }
+    .shell { min-height: 100vh; display: flex; flex-direction: column; }
+    .top { padding: 14px 16px; border-bottom: 1px solid #1f2a44; background: #111a2f; }
+    .title { font-size: 14px; opacity: .9; }
+    .meta { font-size: 12px; opacity: .75; margin-top: 4px; word-break: break-all; }
+    .status { padding: 16px; font-size: 14px; }
+    .frame-wrap { flex: 1; display: none; }
+    iframe { width: 100%; height: 100%; border: 0; background: white; }
+    .dot::after { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 6px; background: #7aa2ff; animation: pulse 1s infinite ease-in-out; }
+    @keyframes pulse { 0%{opacity:.3} 50%{opacity:1} 100%{opacity:.3} }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="top">
+      <div class="title">PubWeb wrapper</div>
+      <div class="meta">Hash: ${hash}</div>
+    </div>
+    <div class="status" id="statusText">Locating content across the network<span class="dot"></span></div>
+    <div class="frame-wrap" id="frameWrap">
+      <iframe id="siteFrame" title="PubWeb Site"></iframe>
+    </div>
+  </div>
+  <script>
+    const hash = ${JSON.stringify(hash)};
+    const statusText = document.getElementById('statusText');
+    const frameWrap = document.getElementById('frameWrap');
+    const frame = document.getElementById('siteFrame');
+
+    async function checkReady() {
       try {
-        const upstream = await fetch(target);
-        const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
-        const body = await upstream.text();
-        res.status(upstream.status).set('content-type', contentType).send(body);
+        const res = await fetch('/resolve/' + hash, { cache: 'no-store' });
+        if (res.ok) {
+          statusText.style.display = 'none';
+          frameWrap.style.display = 'block';
+          frame.src = '/page/' + hash;
+          return;
+        }
+
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 404) {
+          statusText.textContent = data.reason || 'This hash is not currently available.';
+          return;
+        }
+
+        statusText.textContent = data.reason || 'Still warming content from network peers...';
       } catch (err) {
-        res.status(502).json({ error: 'Failed to fetch page from peer', target });
+        statusText.textContent = 'Network check failed, retrying shortly...';
       }
+
+      setTimeout(checkReady, 3000);
+    }
+
+    checkReady();
+  </script>
+</body>
+</html>`;
+
+      res.status(200).set('content-type', 'text/html; charset=utf-8').send(html);
     });
 
     // Get all peers
@@ -197,6 +368,7 @@ class Tracker {
   }
 
   async start(port: number = 4000): Promise<void> {
+    await this.store.init();
     return new Promise((resolve) => {
       this.app.listen(port, () => {
         console.log(`Tracker listening on port ${port}`);

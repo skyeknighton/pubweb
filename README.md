@@ -90,7 +90,11 @@ PubWeb/
 
 - `GET /` - Dashboard HTML (leaderboard + pages)
 - `POST /announce` - Peer announces itself
+- `POST /v1/peer/heartbeat` - Peer capacity/inventory heartbeat
+- `GET /v1/peer/assignments?peerId=...` - Automatic assignment manifest
 - `GET /query/:hash` - Find peers hosting page
+- `GET /resolve/:hash` - Wrapper readiness status for delayed-load flow
+- `GET /:hash` - Invisible wrapper for public hash access
 - `GET /leaderboard` - Top peers by upload bytes
 - `GET /peers` - List active peers
 - `GET /health` - Health check
@@ -143,6 +147,25 @@ npm run build
 ### Watch mode
 ```bash
 npm run build  # Run this after changes
+```
+
+## Residential Deployment Notes
+
+Target behavior: end users request `https://pubweb.online/<hash>` and receive a wrapper page while content is fetched from peers.
+
+1. Run a public tracker/gateway node (`src/tracker/index.ts`) on a reachable host (Railway/VPS/home+tunnel).
+2. Run contributor peers with `TRACKER_URL` pointing to that gateway.
+3. On each peer, set `PUBLIC_HOST` to a reachable hostname/IP (or tunnel host) for back-fetching.
+4. Keep `PEER_MAX_DISK_BYTES` and `PEER_MAX_UPLOAD_KBPS` bounded for residential safety.
+5. Use a tunnel/provider edge if your residential ISP blocks inbound ports.
+
+Example peer env:
+
+```bash
+TRACKER_URL=https://pubweb.online
+PUBLIC_HOST=my-peer.example.com
+PEER_MAX_DISK_BYTES=2147483648
+PEER_MAX_UPLOAD_KBPS=1024
 ```
 
 ### Project Structure Details
