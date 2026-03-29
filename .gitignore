@@ -60,3 +60,6 @@ keys/
 *.ppk
 id_rsa
 id_ed25519
+
+# Local deployment scripts with secrets
+deploy-via-api.ps1

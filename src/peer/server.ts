@@ -524,8 +524,8 @@ class PeerServer {
         peerId: this.peerId,
         version: process.env.npm_package_version || '0.1.0',
         capacity: {
-          maxDiskBytes: parseInt(process.env.PEER_MAX_DISK_BYTES || `${5 * 1024 * 1024 * 1024}`, 10),
-          maxUploadKbps: parseInt(process.env.PEER_MAX_UPLOAD_KBPS || '2048', 10),
+          maxDiskBytes: parseInt(process.env.PEER_MAX_DISK_BYTES || `${1024 * 1024 * 1024}`, 10),
+          maxUploadKbps: parseInt(process.env.PEER_MAX_UPLOAD_KBPS || '1024', 10),
         },
         usage: {
           usedDiskBytes: storageBytes,

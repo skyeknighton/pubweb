@@ -2,6 +2,33 @@
 
 A peer-to-peer network for hosting and distributing HTML pages with a reputation tracker. Run a local peer, publish pages, and appear on the global leaderboard.
 
+## Deploy Readiness
+
+- Deployment and distribution plan: [docs/deploy-distribution-plan.md](docs/deploy-distribution-plan.md)
+
+## Public Onboarding Loop
+
+- Repository: https://github.com/skyeknighton/pubweb
+- Download channel: https://github.com/skyeknighton/pubweb/releases/latest
+
+Publish the themed onboarding page to the network:
+
+```bash
+npm run publish:make-page
+```
+
+Optional: pin the tracker homepage "Start here" button to a specific onboarding page hash:
+
+```bash
+PUBWEB_ONBOARDING_HASH=<your_hash_here>
+```
+
+Publish the styled Moby-Dick page:
+
+```bash
+npm run publish:moby-dick
+```
+
 ## Features
 
 - **Peer Server** (port 3000): Hosts published HTML pages

@@ -38,12 +38,36 @@ class Tracker {
   private resolveCursor: Map<string, number> = new Map();
   private store: TrackerStore;
   private replicationTarget: number;
+  private onboardingHash: string;
 
   constructor() {
     const dbPath = process.env.TRACKER_DB_PATH || path.join(process.cwd(), 'tracker.db');
     this.store = new TrackerStore(dbPath);
     this.replicationTarget = parseInt(process.env.REPLICATION_TARGET || '2', 10);
+    this.onboardingHash = process.env.PUBWEB_ONBOARDING_HASH || '2cdd7f0aba040460a0b4e1b8dbdc64fcafb669cee87f5ac547c6ecb8f781310f';
     this.setupRoutes();
+  }
+
+  private escapeHtml(value: string): string {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  private sanitizeTitleInput(value: unknown): string {
+    if (typeof value !== 'string') {
+      return '';
+    }
+
+    const normalized = value
+      .replace(/[\u0000-\u001F\u007F]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return normalized.slice(0, 160);
   }
 
   private extractObservedIp(req: Request): string | undefined {
@@ -309,8 +333,8 @@ class Tracker {
         }
 
         const hash = typeof summary.hash === 'string' ? summary.hash : '';
-        const title = typeof summary.title === 'string' ? summary.title.trim() : '';
-        if (!hash || !title) {
+        const title = this.sanitizeTitleInput(summary.title);
+        if (!/^[a-fA-F0-9]{64}$/.test(hash) || !title) {
           continue;
         }
 
@@ -531,11 +555,12 @@ class Tracker {
 <head>
   <meta charset="utf-8" />
   <title>PubWeb Tracker</title>
-  <style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px;}h1,h2{margin-bottom:0.25rem}table{border-collapse:collapse;width:100%;max-width:900px;}th,td{border:1px solid #ccc;padding:6px;text-align:left;}a{color:#0366d6;text-decoration:none;}</style>
+  <style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px;}h1,h2{margin-bottom:0.25rem}table{border-collapse:collapse;width:100%;max-width:900px;}th,td{border:1px solid #ccc;padding:6px;text-align:left;}a{color:#0366d6;text-decoration:none;}.onboard{display:inline-block;margin:10px 0 18px;padding:10px 14px;border:1px solid #2b6de5;border-radius:999px;background:#eef4ff;color:#0f4dc4;font-weight:600}</style>
 </head>
 <body>
   <h1>PubWeb Tracker</h1>
   <p>Live peers and page index (one-server / one-page test)</p>
+  <p><a class="onboard" href="/${this.onboardingHash}">Start here: Make your own page (download + publish loop)</a></p>
 
   <h2>Top peers (by upload bytes today)</h2>
   <table>
@@ -543,7 +568,7 @@ class Tracker {
     ${leaderboard
       .map(
         (p, i) =>
-          `<tr><td>${i + 1}</td><td>${p.peerId}</td><td>${this.getDisplayHost(p)}:${p.mappedPort || p.port}</td><td>${p.bytesUploaded}</td><td>${p.bytesDownloaded}</td><td>${peerStats.get(p.peerId)?.pageServes || 0}</td><td>${p.pages.length}</td></tr>`
+          `<tr><td>${i + 1}</td><td>${this.escapeHtml(p.peerId)}</td><td>${this.escapeHtml(this.getDisplayHost(p))}:${p.mappedPort || p.port}</td><td>${p.bytesUploaded}</td><td>${p.bytesDownloaded}</td><td>${peerStats.get(p.peerId)?.pageServes || 0}</td><td>${p.pages.length}</td></tr>`
       )
       .join('')}
   </table>
@@ -554,7 +579,7 @@ class Tracker {
     ${topPages
       .map(
         (p, i) =>
-          `<tr><td>${i + 1}</td><td>${p.title}</td><td><code>${p.hash}</code></td><td>${p.copies}</td><td>${p.pageVisits}</td><td><a href="/${p.hash}">open</a></td></tr>`
+          `<tr><td>${i + 1}</td><td>${this.escapeHtml(p.title)}</td><td><code>${p.hash}</code></td><td>${p.copies}</td><td>${p.pageVisits}</td><td><a href="/${p.hash}">open</a></td></tr>`
       )
       .join('')}
   </table>

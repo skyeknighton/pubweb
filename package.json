@@ -14,6 +14,7 @@
     "start:electron": "electron dist/main/index.js",
     "start:peer": "node start-peer.js",
     "publish:exemplar": "node publish-exemplar-page.js",
+    "publish:make-page": "node publish-make-your-own-page.js",
     "publish:moby-dick": "node publish-moby-dick.js",
     "tracker": "node dist/main/tracker/index.js",
     "smoke": "node smoke-test-network.js",
