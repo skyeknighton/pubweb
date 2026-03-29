@@ -29,6 +29,27 @@ Publish the styled Moby-Dick page:
 npm run publish:moby-dick
 ```
 
+## Windows Release Flow
+
+Windows is the first supported desktop release target.
+
+Build local Windows installers:
+
+```bash
+npm run dist:win
+```
+
+This outputs installer artifacts into `release/`:
+
+- NSIS installer (`.exe`)
+- Portable executable (`.exe`)
+
+GitHub release automation:
+
+- Push a version tag like `v0.10.1`
+- GitHub Actions builds Windows artifacts and checksums
+- A **draft** GitHub release is created/updated with artifacts attached
+
 ## Features
 
 - **Peer Server** (port 3000): Hosts published HTML pages

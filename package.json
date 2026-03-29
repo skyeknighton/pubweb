@@ -19,6 +19,7 @@
     "tracker": "node dist/main/tracker/index.js",
     "smoke": "node smoke-test-network.js",
     "smoke:railway": "node smoke-test-network.js --label railway",
+    "dist:win": "npm run build && electron-builder --win nsis portable --publish never",
     "test": "jest"
   },
   "dependencies": {
@@ -40,6 +41,7 @@
     "concurrently": "^8.0.1",
     "css-loader": "^6.8.1",
     "electron": "^24.0.0",
+    "electron-builder": "^26.8.1",
     "electron-dev": "^1.0.1",
     "html-webpack-plugin": "^5.5.3",
     "jest": "^29.5.0",
@@ -53,5 +55,51 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "build": {
+    "appId": "online.pubweb.app",
+    "productName": "PubWeb",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "public/**/*",
+      "package.json",
+      "start-peer.js",
+      "start-service.js"
+    ],
+    "extraMetadata": {
+      "main": "dist/main/index.js"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "skyeknighton",
+        "repo": "pubweb"
+      }
+    ]
   }
 }
