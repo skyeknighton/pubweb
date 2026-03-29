@@ -1,7 +1,7 @@
 {
   "name": "pubweb",
   "version": "0.1.0",
-  "main": "dist/main/index.js",
+  "main": "dist/main/main/index.js",
   "description": "PubWeb - Decentralized webpage hosting with P2P distribution",
   "scripts": {
     "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
@@ -11,7 +11,7 @@
     "build:main": "tsc --project tsconfig.main.json",
     "build:renderer": "webpack --config webpack.prod.js",
     "start": "node start-service.js",
-    "start:electron": "electron dist/main/index.js",
+    "start:electron": "electron dist/main/main/index.js",
     "start:peer": "node start-peer.js",
     "publish:exemplar": "node publish-exemplar-page.js",
     "publish:make-page": "node publish-make-your-own-page.js",
@@ -41,7 +41,7 @@
     "concurrently": "^8.0.1",
     "css-loader": "^6.8.1",
     "electron": "^24.0.0",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^24.13.3",
     "electron-dev": "^1.0.1",
     "html-webpack-plugin": "^5.5.3",
     "jest": "^29.5.0",
@@ -70,8 +70,10 @@
       "start-service.js"
     ],
     "extraMetadata": {
-      "main": "dist/main/index.js"
+      "main": "dist/main/main/index.js"
     },
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
     "win": {
       "target": [
         {
