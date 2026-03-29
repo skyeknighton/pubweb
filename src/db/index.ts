@@ -19,6 +19,12 @@ export interface Stats {
   pagesHosted: number;
 }
 
+export interface PageSummary {
+  hash: string;
+  title: string;
+  created: number;
+}
+
 export class Database {
   private db: sqlite3.Database;
 
@@ -63,6 +69,14 @@ export class Database {
             timestamp INTEGER,
             bytes INTEGER,
             FOREIGN KEY (pageId) REFERENCES pages(id)
+          )
+        `);
+
+        this.db.run(`
+          CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated INTEGER NOT NULL
           )
         `, (err) => {
           if (err) reject(err);
@@ -186,6 +200,29 @@ export class Database {
     });
   }
 
+  async getPageSummaries(limit: number = 500): Promise<PageSummary[]> {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        'SELECT hash, title, created FROM pages ORDER BY created DESC LIMIT ?',
+        [limit],
+        (err, rows: Array<{ hash: string; title: string | null; created: number }>) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          resolve(
+            (rows || []).map((row) => ({
+              hash: row.hash,
+              title: (row.title || '').trim() || `Untitled ${row.hash.slice(0, 12)}`,
+              created: row.created || 0,
+            }))
+          );
+        }
+      );
+    });
+  }
+
   async hasPageHash(hash: string): Promise<boolean> {
     return new Promise((resolve, reject) => {
       this.db.get(
@@ -261,6 +298,49 @@ export class Database {
               pagesHosted: row.pagesHosted,
             });
           }
+        }
+      );
+    });
+  }
+
+  async getSetting(key: string): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        'SELECT value FROM settings WHERE key = ?',
+        [key],
+        (err, row: any) => {
+          if (err) reject(err);
+          else resolve(typeof row?.value === 'string' ? row.value : null);
+        }
+      );
+    });
+  }
+
+  async setSetting(key: string, value: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `INSERT INTO settings (key, value, updated)
+         VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated = excluded.updated`,
+        [key, value, Date.now()],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  }
+
+  async updatePageTitle(hash: string, title: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        'UPDATE pages SET title = ? WHERE hash = ?',
+        [title, hash],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
         }
       );
     });

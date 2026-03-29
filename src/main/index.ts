@@ -3,6 +3,15 @@ import path from 'path';
 import { startPeerServer } from '../peer/server';
 import { Database } from '../db';
 
+const DEFAULT_MAX_PAGE_BYTES = 1_474_560;
+
+function getMaxPageBytes(): number {
+  const configuredMaxPageBytes = parseInt(process.env.PEER_MAX_PAGE_BYTES || '', 10);
+  return Number.isFinite(configuredMaxPageBytes) && configuredMaxPageBytes > 0
+    ? configuredMaxPageBytes
+    : DEFAULT_MAX_PAGE_BYTES;
+}
+
 let mainWindow: BrowserWindow;
 let peerServer: any;
 let db: Database;
@@ -50,6 +59,12 @@ app.on('ready', async () => {
 
   // Setup IPC handlers
   ipcMain.handle('upload-page', async (event, { html, title, tags }) => {
+    const maxPageBytes = getMaxPageBytes();
+    const htmlBytes = Buffer.byteLength(String(html || ''));
+    if (!html || htmlBytes > maxPageBytes) {
+      throw new Error(`Page exceeds max size of ${maxPageBytes} bytes`);
+    }
+
     const pageId = await db.addPage({ html, title, tags, author: 'anonymous' });
     return { success: true, pageId };
   });

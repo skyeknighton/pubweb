@@ -22,7 +22,7 @@ const req = http.request(options, (res) => {
   res.on('data', (chunk) => {
     const result = JSON.parse(chunk.toString());
     console.log('Published page with hash:', result.hash);
-    console.log('Page URL: http://localhost:3000/page/' + result.hash);
+    console.log('Page URL: https://tracker.pubweb.online/' + result.hash);
   });
 });
 

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PubWeb: How This Network Works</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-0: #05161f;
+      --bg-1: #0f2f2f;
+      --bg-2: #153f57;
+      --ink-0: #f4f7f2;
+      --ink-1: #cde7d4;
+      --ink-2: #9ab7aa;
+      --line: rgba(232, 247, 232, 0.25);
+      --spark: #f4f19d;
+      --accent: #77e6c8;
+      --accent-2: #5fb8ff;
+      --card: rgba(6, 23, 34, 0.72);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+      color: var(--ink-0);
+      background:
+        radial-gradient(circle at 12% 18%, #20475f 0%, transparent 38%),
+        radial-gradient(circle at 88% 12%, #173d34 0%, transparent 42%),
+        linear-gradient(140deg, var(--bg-0), var(--bg-1) 40%, var(--bg-2));
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .scan-grid {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: radial-gradient(circle at 50% 35%, black 18%, transparent 88%);
+      opacity: 0.45;
+      animation: drift 14s linear infinite;
+    }
+
+    @keyframes drift {
+      from { transform: translateY(0); }
+      to { transform: translateY(28px); }
+    }
+
+    .layout {
+      width: min(1100px, 92vw);
+      margin: 0 auto;
+      padding: 52px 0 72px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .hero {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: clamp(22px, 3vw, 44px);
+      background: linear-gradient(160deg, rgba(10, 29, 44, 0.88), rgba(5, 20, 30, 0.66));
+      box-shadow: 0 18px 80px rgba(0, 0, 0, 0.35);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: '';
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      right: -70px;
+      top: -70px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, rgba(119, 230, 200, 0.8), rgba(119, 230, 200, 0));
+      filter: blur(8px);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-size: 0.78rem;
+      color: var(--spark);
+      margin-bottom: 12px;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 3.7rem);
+      line-height: 1.04;
+      max-width: 12ch;
+    }
+
+    .lede {
+      margin-top: 18px;
+      max-width: 64ch;
+      color: var(--ink-1);
+      font-size: 1.03rem;
+      line-height: 1.6;
+    }
+
+    .hero-pills {
+      margin-top: 22px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .pill {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.78rem;
+      color: #dff5f0;
+      border: 1px solid rgba(223, 245, 240, 0.45);
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: rgba(17, 42, 58, 0.58);
+    }
+
+    .cards {
+      margin-top: 26px;
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      transform: translateY(16px);
+      opacity: 0;
+      animation: rise 560ms ease-out forwards;
+    }
+
+    .card:nth-child(2) { animation-delay: 100ms; }
+    .card:nth-child(3) { animation-delay: 200ms; }
+    .card:nth-child(4) { animation-delay: 300ms; }
+
+    @keyframes rise {
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 1.1rem;
+      color: #f0fff9;
+    }
+
+    .card p {
+      margin: 9px 0 0;
+      color: var(--ink-2);
+      line-height: 1.5;
+      font-size: 0.94rem;
+    }
+
+    .flow {
+      margin-top: 26px;
+      border: 1px dashed rgba(219, 238, 255, 0.4);
+      border-radius: 20px;
+      padding: 16px;
+      background: rgba(11, 24, 34, 0.62);
+    }
+
+    .flow h3 {
+      margin: 0 0 11px;
+      font-size: 1rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #d4efff;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .flow-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+      gap: 10px;
+    }
+
+    .node {
+      border: 1px solid rgba(199, 230, 255, 0.35);
+      border-radius: 12px;
+      padding: 11px;
+      background: rgba(10, 35, 51, 0.64);
+      font-size: 0.87rem;
+      color: #d7ecf5;
+      line-height: 1.4;
+    }
+
+    .node strong {
+      display: block;
+      margin-bottom: 5px;
+      color: #f1fffb;
+      font-size: 0.88rem;
+    }
+
+    .footer-note {
+      margin-top: 24px;
+      color: var(--ink-2);
+      font-size: 0.88rem;
+      line-height: 1.5;
+      border-top: 1px solid rgba(240, 255, 251, 0.16);
+      padding-top: 15px;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      color: var(--accent-2);
+    }
+
+    @media (max-width: 700px) {
+      .layout { padding-top: 24px; }
+      .hero { border-radius: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="scan-grid" aria-hidden="true"></div>
+
+  <main class="layout">
+    <section class="hero">
+      <span class="eyebrow">PubWeb Exemplar</span>
+      <h1>Pages appear when the network agrees they exist.</h1>
+      <p class="lede">
+        You are viewing a page addressed by content hash, not by server path. PubWeb uses peers to store HTML payloads,
+        a tracker to coordinate who has what, and a wrapper route that quietly resolves the page before rendering it.
+      </p>
+
+      <div class="hero-pills">
+        <span class="pill">Hash-addressed HTML</span>
+        <span class="pill">Tracker-coordinated swarm</span>
+        <span class="pill">Wrapper-based loading</span>
+        <span class="pill">Peer-powered hosting</span>
+      </div>
+
+      <div class="cards">
+        <article class="card">
+          <h2>1. Publish</h2>
+          <p>A peer receives HTML and computes SHA-256. That hash becomes the page address and content identity.</p>
+        </article>
+        <article class="card">
+          <h2>2. Announce</h2>
+          <p>The peer announces inventory to the tracker, including hash and basic metadata such as the page title.</p>
+        </article>
+        <article class="card">
+          <h2>3. Resolve</h2>
+          <p>When a user opens tracker/hash, the wrapper polls resolve until an active peer can serve the content.</p>
+        </article>
+        <article class="card">
+          <h2>4. Render</h2>
+          <p>The wrapper loads page/hash into an isolated frame, so users see the site while the fetch process stays invisible.</p>
+        </article>
+      </div>
+
+      <section class="flow" aria-label="network flow">
+        <h3>Request path</h3>
+        <div class="flow-grid">
+          <div class="node"><strong>User</strong>Visits tracker/hash</div>
+          <div class="node"><strong>Wrapper</strong>Checks resolve/hash</div>
+          <div class="node"><strong>Tracker</strong>Picks active peer for hash</div>
+          <div class="node"><strong>Peer</strong>Returns verified HTML content</div>
+          <div class="node"><strong>Wrapper</strong>Loads page/hash</div>
+        </div>
+      </section>
+
+      <p class="footer-note">
+        This exemplar is intentionally plain HTML/CSS with no build step. If you discovered it through tracker discovery,
+        that means at least one live peer announced this title and hash successfully.
+      </p>
+    </section>
+  </main>
+</body>
+</html>

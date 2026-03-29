@@ -32,6 +32,20 @@ export interface AssignmentItem {
   reason: string;
 }
 
+export interface PeerDeliveryStats {
+  peerId: string;
+  pageServes: number;
+  bytesServed: number;
+  lastServed: number;
+}
+
+export interface SiteDeliveryStats {
+  siteHash: string;
+  pageVisits: number;
+  bytesServed: number;
+  lastVisit: number;
+}
+
 export class TrackerStore {
   private db: sqlite3.Database;
 
@@ -91,6 +105,104 @@ export class TrackerStore {
         PRIMARY KEY (peer_id, site_hash, version)
       )
     `);
+
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS peer_delivery_stats (
+        peer_id TEXT PRIMARY KEY,
+        page_serves INTEGER NOT NULL DEFAULT 0,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        last_served INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    await this.run(`
+      CREATE TABLE IF NOT EXISTS site_delivery_stats (
+        site_hash TEXT PRIMARY KEY,
+        page_visits INTEGER NOT NULL DEFAULT 0,
+        bytes_served INTEGER NOT NULL DEFAULT 0,
+        last_visit INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+  }
+
+  async recordServe(peerId: string, siteHash: string, bytesServed: number): Promise<void> {
+    const now = Date.now();
+
+    await this.run(
+      `INSERT INTO peer_delivery_stats (peer_id, page_serves, bytes_served, last_served)
+       VALUES (?, 1, ?, ?)
+       ON CONFLICT(peer_id) DO UPDATE SET
+         page_serves = peer_delivery_stats.page_serves + 1,
+         bytes_served = peer_delivery_stats.bytes_served + excluded.bytes_served,
+         last_served = excluded.last_served`,
+      [peerId, bytesServed, now]
+    );
+
+    await this.run(
+      `INSERT INTO site_delivery_stats (site_hash, page_visits, bytes_served, last_visit)
+       VALUES (?, 1, ?, ?)
+       ON CONFLICT(site_hash) DO UPDATE SET
+         page_visits = site_delivery_stats.page_visits + 1,
+         bytes_served = site_delivery_stats.bytes_served + excluded.bytes_served,
+         last_visit = excluded.last_visit`,
+      [siteHash, bytesServed, now]
+    );
+  }
+
+  async getPeerDeliveryStats(peerIds: string[]): Promise<Map<string, PeerDeliveryStats>> {
+    if (peerIds.length === 0) {
+      return new Map();
+    }
+
+    const placeholders = peerIds.map(() => '?').join(', ');
+    const rows = await this.all<{
+      peer_id: string;
+      page_serves: number;
+      bytes_served: number;
+      last_served: number;
+    }>(
+      `SELECT peer_id, page_serves, bytes_served, last_served
+       FROM peer_delivery_stats
+       WHERE peer_id IN (${placeholders})`,
+      peerIds
+    );
+
+    return new Map(
+      rows.map((row) => [row.peer_id, {
+        peerId: row.peer_id,
+        pageServes: row.page_serves || 0,
+        bytesServed: row.bytes_served || 0,
+        lastServed: row.last_served || 0,
+      }])
+    );
+  }
+
+  async getSiteDeliveryStats(siteHashes: string[]): Promise<Map<string, SiteDeliveryStats>> {
+    if (siteHashes.length === 0) {
+      return new Map();
+    }
+
+    const placeholders = siteHashes.map(() => '?').join(', ');
+    const rows = await this.all<{
+      site_hash: string;
+      page_visits: number;
+      bytes_served: number;
+      last_visit: number;
+    }>(
+      `SELECT site_hash, page_visits, bytes_served, last_visit
+       FROM site_delivery_stats
+       WHERE site_hash IN (${placeholders})`,
+      siteHashes
+    );
+
+    return new Map(
+      rows.map((row) => [row.site_hash, {
+        siteHash: row.site_hash,
+        pageVisits: row.page_visits || 0,
+        bytesServed: row.bytes_served || 0,
+        lastVisit: row.last_visit || 0,
+      }])
+    );
   }
 
   async upsertSite(siteHash: string, version: number = 1, sizeBytes: number = 0): Promise<void> {
@@ -238,6 +350,34 @@ export class TrackerStore {
     await this.run('DELETE FROM peer_nodes WHERE last_seen < ?', [cutoff]);
     await this.run('DELETE FROM peer_inventory WHERE last_seen < ?', [cutoff]);
   }
+
+    async getTopAssignments(limit: number = 50, replicationTarget: number = 2): Promise<Array<{
+      siteHash: string;
+      replicas: number;
+      priority: number;
+    }>> {
+      const rows = await this.all<{
+        site_hash: string;
+        replicas: number;
+        replication_target: number;
+      }>(
+        `SELECT
+           s.site_hash,
+           s.replication_target,
+           (SELECT COUNT(1) FROM peer_inventory pi WHERE pi.site_hash = s.site_hash) AS replicas
+         FROM sites s
+         WHERE s.policy_state = 'active'
+         ORDER BY replicas ASC, s.updated_at DESC
+         LIMIT ?`,
+        [limit]
+      );
+
+      return rows.map((row) => ({
+        siteHash: row.site_hash,
+        replicas: row.replicas,
+        priority: Math.min(100, 50 + (Math.max(1, replicationTarget - row.replicas) * 10)),
+      }));
+    }
 
   close(): void {
     this.db.close();

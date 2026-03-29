@@ -10,15 +10,20 @@
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc --project tsconfig.main.json",
     "build:renderer": "webpack --config webpack.prod.js",
-    "start": "node dist/main/tracker/index.js",
+    "start": "node start-service.js",
     "start:electron": "electron dist/main/index.js",
     "start:peer": "node start-peer.js",
+    "publish:exemplar": "node publish-exemplar-page.js",
+    "publish:moby-dick": "node publish-moby-dick.js",
     "tracker": "node dist/main/tracker/index.js",
+    "smoke": "node smoke-test-network.js",
+    "smoke:railway": "node smoke-test-network.js --label railway",
     "test": "jest"
   },
   "dependencies": {
     "express": "^4.18.2",
     "got": "^13.0.0",
+    "nat-api": "^0.3.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "sqlite3": "^5.1.6",
@@ -46,6 +51,6 @@
     "webpack-dev-server": "^4.13.1"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }

@@ -1,14 +1,30 @@
-import express from 'express';
+import express, { Request } from 'express';
 import crypto from 'crypto';
+import { Server } from 'http';
 import path from 'path';
 import { TrackerStore, PeerHeartbeatPayload } from './store';
 // import config from '../../config.json';
+
+interface PeerEndpoint {
+  kind: 'public' | 'local';
+  url: string;
+  reachable: boolean;
+  source: 'upnp' | 'config' | 'local';
+}
 
 interface TrackerEntry {
   peerId: string;
   host: string;
   port: number;
+  observedIp?: string;
+  publicBaseUrl?: string;
+  mappedPort?: number;
+  natType?: string;
+  reachable?: boolean;
+  relayRequired?: boolean;
+  endpoints?: PeerEndpoint[];
   pages: string[];
+  pageTitles: Record<string, string>;
   bytesUploaded: number;
   bytesDownloaded: number;
   lastSeen: number;
@@ -16,8 +32,10 @@ interface TrackerEntry {
 
 class Tracker {
   private app = express();
+  private httpServer: Server | null = null;
   private peers: Map<string, TrackerEntry> = new Map();
   private pageIndex: Map<string, Set<string>> = new Map();
+  private resolveCursor: Map<string, number> = new Map();
   private store: TrackerStore;
   private replicationTarget: number;
 
@@ -26,6 +44,95 @@ class Tracker {
     this.store = new TrackerStore(dbPath);
     this.replicationTarget = parseInt(process.env.REPLICATION_TARGET || '2', 10);
     this.setupRoutes();
+  }
+
+  private extractObservedIp(req: Request): string | undefined {
+    const forwarded = req.headers['x-forwarded-for'];
+    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    const candidate = (forwardedValue || req.socket.remoteAddress || req.ip || '').split(',')[0].trim();
+    if (!candidate) {
+      return undefined;
+    }
+
+    return candidate.replace(/^::ffff:/, '');
+  }
+
+  private isLocalHost(host: string | undefined): boolean {
+    if (!host) {
+      return true;
+    }
+
+    const normalized = host.toLowerCase();
+    return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+  }
+
+  private getDisplayHost(peer: TrackerEntry): string {
+    if (peer.observedIp && this.isLocalHost(peer.host)) {
+      return peer.observedIp;
+    }
+
+    return peer.host;
+  }
+
+  private getFetchHost(peer: TrackerEntry): string {
+    return peer.host;
+  }
+
+  private async probePeer(peer: TrackerEntry): Promise<void> {
+    const candidateBases = new Set<string>();
+
+    if (peer.publicBaseUrl) {
+      candidateBases.add(peer.publicBaseUrl.replace(/\/+$/, ''));
+    }
+
+    const displayHost = this.getDisplayHost(peer);
+    const mappedPort = peer.mappedPort || peer.port;
+    if (displayHost && mappedPort) {
+      candidateBases.add(`http://${displayHost}:${mappedPort}`);
+    }
+
+    for (const baseUrl of candidateBases) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+
+      try {
+        const response = await fetch(`${baseUrl}/status`, { signal: controller.signal });
+        if (!response.ok) {
+          continue;
+        }
+
+        const current = this.peers.get(peer.peerId);
+        if (!current) {
+          return;
+        }
+
+        current.publicBaseUrl = baseUrl;
+        current.reachable = true;
+        current.relayRequired = false;
+        current.host = this.getDisplayHost(current);
+
+        if (current.endpoints && current.endpoints.length > 0) {
+          current.endpoints = current.endpoints.map((endpoint) => {
+            if (endpoint.kind === 'public') {
+              return {
+                ...endpoint,
+                url: baseUrl,
+                reachable: true,
+              };
+            }
+            return endpoint;
+          });
+        } else {
+          current.endpoints = [{ kind: 'public', url: baseUrl, reachable: true, source: 'config' }];
+        }
+
+        return;
+      } catch {
+        // Try next candidate
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
   }
 
   private getPeerCandidate(hash: string): TrackerEntry | null {
@@ -41,32 +148,89 @@ class Tracker {
     return candidate || null;
   }
 
+  private getResolveCandidates(hash: string): TrackerEntry[] {
+    const candidates = this.getActivePeersForHash(hash, 60_000)
+      .sort((a, b) => {
+        const aReachable = a.reachable ? 1 : 0;
+        const bReachable = b.reachable ? 1 : 0;
+        if (bReachable !== aReachable) {
+          return bReachable - aReachable;
+        }
+
+        const aPublic = a.publicBaseUrl ? 1 : 0;
+        const bPublic = b.publicBaseUrl ? 1 : 0;
+        if (bPublic !== aPublic) {
+          return bPublic - aPublic;
+        }
+
+        return b.lastSeen - a.lastSeen;
+      });
+
+    if (candidates.length <= 1) {
+      return candidates;
+    }
+
+    const offset = this.resolveCursor.get(hash) || 0;
+    const rotated = candidates.map((_, index) => candidates[(index + offset) % candidates.length]);
+    this.resolveCursor.set(hash, (offset + 1) % candidates.length);
+    return rotated;
+  }
+
+  private getActivePeersForHash(hash: string, maxAgeMs: number = 60_000): TrackerEntry[] {
+    const peerIds = this.pageIndex.get(hash);
+    if (!peerIds || peerIds.size === 0) {
+      return [];
+    }
+
+    const cutoff = Date.now() - maxAgeMs;
+    return Array.from(peerIds)
+      .map((peerId) => this.peers.get(peerId))
+      .filter((peer): peer is TrackerEntry => !!peer && peer.lastSeen >= cutoff);
+  }
+
+  private buildPeerPageUrl(peer: TrackerEntry, hash: string): string {
+    const publicEndpoint = (peer.endpoints || []).find((endpoint) => endpoint.kind === 'public' && endpoint.reachable);
+    if (publicEndpoint) {
+      return `${publicEndpoint.url.replace(/\/+$/, '')}/page/${hash}`;
+    }
+    if (peer.publicBaseUrl) {
+      return `${peer.publicBaseUrl.replace(/\/+$/, '')}/page/${hash}`;
+    }
+    return `http://${this.getFetchHost(peer)}:${peer.port}/page/${hash}`;
+  }
+
   private async resolvePage(hash: string): Promise<
-    | { status: 'ready'; html: string; contentType: string; target: string }
+    | { status: 'ready'; html: string; contentType: string; target: string; peerId: string }
     | { status: 'warming'; reason: string }
     | { status: 'missing'; reason: string }
   > {
-    const candidate = this.getPeerCandidate(hash);
-    if (!candidate) {
+    const candidates = this.getResolveCandidates(hash);
+    if (candidates.length === 0) {
       const known = this.pageIndex.has(hash);
       return known
         ? { status: 'warming', reason: 'Page hash exists, waiting for an active peer.' }
         : { status: 'missing', reason: 'Page hash is not currently indexed by tracker.' };
     }
 
-    const target = `http://${candidate.host}:${candidate.port}/page/${hash}`;
-    try {
-      const upstream = await fetch(target);
-      if (!upstream.ok) {
-        return { status: 'warming', reason: `Peer responded ${upstream.status}, retrying.` };
-      }
+    let lastReason = 'Failed to reach active peer, retrying.';
+    for (const candidate of candidates) {
+      const target = this.buildPeerPageUrl(candidate, hash);
+      try {
+        const upstream = await fetch(target);
+        if (!upstream.ok) {
+          lastReason = `Peer responded ${upstream.status}, retrying.`;
+          continue;
+        }
 
-      const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
-      const html = await upstream.text();
-      return { status: 'ready', html, contentType, target };
-    } catch (err) {
-      return { status: 'warming', reason: 'Failed to reach active peer, retrying.' };
+        const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+        const html = await upstream.text();
+        return { status: 'ready', html, contentType, target, peerId: candidate.peerId };
+      } catch {
+        lastReason = 'Failed to reach active peer, retrying.';
+      }
     }
+
+    return { status: 'warming', reason: lastReason };
   }
 
   private setupRoutes() {
@@ -113,25 +277,66 @@ class Tracker {
       }
     });
 
+      // Top assignments bulletin board (pull-based self-assignment)
+      this.app.get('/top-assignments', async (req, res) => {
+        try {
+          const items = await this.store.getTopAssignments(50, this.replicationTarget);
+          res.json({
+            timestamp: Date.now(),
+            replicationTarget: this.replicationTarget,
+            items,
+          });
+        } catch (err) {
+          console.error('Top assignments fetch failed:', err);
+          res.status(500).json({ error: 'Failed to get top assignments' });
+        }
+      });
+
     // Register/update peer
     this.app.post('/announce', async (req, res) => {
-      const { peerId, host, port, pages, bytesUploaded, bytesDownloaded } = req.body;
+      const { peerId, host, port, publicBaseUrl, mappedPort, natType, reachable, relayRequired, endpoints, pages, pageSummaries, bytesUploaded, bytesDownloaded } = req.body;
 
       if (!peerId || !host || !port) {
         return res.status(400).json({ error: 'Missing peer info' });
+      }
+
+      const observedIp = this.extractObservedIp(req);
+      const summaryList = Array.isArray(pageSummaries) ? pageSummaries : [];
+      const pageTitles: Record<string, string> = {};
+      for (const summary of summaryList) {
+        if (!summary || typeof summary !== 'object') {
+          continue;
+        }
+
+        const hash = typeof summary.hash === 'string' ? summary.hash : '';
+        const title = typeof summary.title === 'string' ? summary.title.trim() : '';
+        if (!hash || !title) {
+          continue;
+        }
+
+        pageTitles[hash] = title;
       }
 
       const peer: TrackerEntry = {
         peerId,
         host,
         port,
+        observedIp,
+        publicBaseUrl,
+        mappedPort,
+        natType,
+        reachable: typeof reachable === 'boolean' ? reachable : !!publicBaseUrl,
+        relayRequired: typeof relayRequired === 'boolean' ? relayRequired : false,
+        endpoints: Array.isArray(endpoints) ? endpoints : [],
         pages: pages || [],
+        pageTitles,
         bytesUploaded: bytesUploaded || 0,
         bytesDownloaded: bytesDownloaded || 0,
         lastSeen: Date.now(),
       };
 
       this.peers.set(peerId, peer);
+      void this.probePeer(peer);
 
       // Update page index
       for (const pageHash of pages || []) {
@@ -149,37 +354,135 @@ class Tracker {
       res.json({ success: true, peerId });
     });
 
+    this.app.get('/discover', async (req, res) => {
+      const q = String(req.query.q || '').trim().toLowerCase();
+      const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || '25'), 10) || 25, 100));
+      const now = Date.now();
+      const siteHashes = Array.from(this.pageIndex.keys());
+      const siteStats = await this.store.getSiteDeliveryStats(siteHashes);
+
+      const items = siteHashes
+        .map((hash) => {
+          const activePeers = this.getActivePeersForHash(hash, 120_000);
+          if (activePeers.length === 0) {
+            return null;
+          }
+
+          const title = activePeers
+            .map((peer) => peer.pageTitles?.[hash])
+            .find((value): value is string => !!value) || `Untitled ${hash.slice(0, 12)}`;
+
+          const latestSeen = activePeers.reduce((maxSeen, peer) => Math.max(maxSeen, peer.lastSeen), 0);
+          return {
+            hash,
+            title,
+            copies: activePeers.length,
+            pageVisits: siteStats.get(hash)?.pageVisits || 0,
+            latestSeen,
+            url: `/${hash}`,
+          };
+        })
+        .filter((item): item is { hash: string; title: string; copies: number; pageVisits: number; latestSeen: number; url: string } => !!item)
+        .filter((item) => {
+          if (!q) {
+            return true;
+          }
+
+          return item.title.toLowerCase().includes(q) || item.hash.includes(q);
+        })
+        .sort((a, b) => {
+          if (b.copies !== a.copies) {
+            return b.copies - a.copies;
+          }
+          return b.latestSeen - a.latestSeen;
+        })
+        .slice(0, limit);
+
+      res.json({
+        generatedAt: now,
+        count: items.length,
+        items,
+      });
+    });
+
     // Query peers for a page
     this.app.get('/query/:hash', (req, res) => {
       const { hash } = req.params;
-      const peers = this.pageIndex.get(hash);
+      const peerList = this.getActivePeersForHash(hash);
 
-      if (!peers || peers.size === 0) {
+      if (peerList.length === 0) {
         return res.status(404).json({ error: 'Page not found on network' });
       }
-
-      const peerList = Array.from(peers)
-        .map((peerId) => this.peers.get(peerId))
-        .filter((p) => p && Date.now() - p.lastSeen < 60000); // Online in last minute
 
       res.json({ peers: peerList });
     });
 
+    // Swarm-style peer discovery for a specific hash
+    this.app.get('/v1/swarm/:hash/peers', (req, res) => {
+      const { hash } = req.params;
+      const requesterPeerId = String(req.query.peerId || '').trim();
+      const max = Math.max(1, Math.min(parseInt(String(req.query.max || '20'), 10) || 20, 100));
+
+      const peers = this.pageIndex.get(hash);
+      if (!peers || peers.size === 0) {
+        return res.status(404).json({ error: 'No peers currently indexing this hash', peers: [] });
+      }
+
+      const now = Date.now();
+      const items = Array.from(peers)
+        .filter((peerId) => !requesterPeerId || peerId !== requesterPeerId)
+        .map((peerId) => this.peers.get(peerId))
+        .filter((p): p is TrackerEntry => !!p && now - p.lastSeen < 90_000)
+        .sort((a, b) => {
+          const reachA = a.reachable ? 1 : 0;
+          const reachB = b.reachable ? 1 : 0;
+          if (reachA !== reachB) {
+            return reachB - reachA;
+          }
+          return b.lastSeen - a.lastSeen;
+        })
+        .slice(0, max)
+        .map((p) => ({
+          peerId: p.peerId,
+          host: this.getDisplayHost(p),
+          port: p.port,
+          mappedPort: p.mappedPort,
+          observedIp: p.observedIp,
+          publicBaseUrl: p.publicBaseUrl,
+          natType: p.natType || 'unknown',
+          reachable: !!p.reachable,
+          relayRequired: !!p.relayRequired,
+          endpoints: p.endpoints || [],
+          lastSeen: p.lastSeen,
+          pageUrl: this.buildPeerPageUrl(p, hash),
+        }));
+
+      res.json({
+        hash,
+        count: items.length,
+        generatedAt: now,
+        peers: items,
+      });
+    });
+
     // Get leaderboard for today
-    this.app.get('/leaderboard', (req, res) => {
+    this.app.get('/leaderboard', async (req, res) => {
       const now = Date.now();
       const today = new Date().toDateString();
+      const peerEntries = Array.from(this.peers.values())
+        .filter((p) => new Date(p.lastSeen).toDateString() === today);
+      const peerStats = await this.store.getPeerDeliveryStats(peerEntries.map((peer) => peer.peerId));
 
-      const leaderboard = Array.from(this.peers.values())
-        .filter((p) => new Date(p.lastSeen).toDateString() === today)
+      const leaderboard = peerEntries
         .sort((a, b) => b.bytesUploaded - a.bytesUploaded)
         .map((p, rank) => ({
           rank: rank + 1,
           peerId: p.peerId,
-          host: p.host,
+          host: this.getDisplayHost(p),
           port: p.port,
           bytesUploaded: p.bytesUploaded,
           bytesDownloaded: p.bytesDownloaded,
+          pagesServed: peerStats.get(p.peerId)?.pageServes || 0,
           ratio: p.bytesUploaded / Math.max(p.bytesDownloaded, 1),
           pages: p.pages.length,
         }))
@@ -189,16 +492,38 @@ class Tracker {
     });
 
     // Public tracker dashboard (one-server one-page landing)
-    this.app.get('/', (req, res) => {
+    this.app.get('/', async (req, res) => {
       const today = new Date().toDateString();
-      const leaderboard = Array.from(this.peers.values())
-        .filter((p) => new Date(p.lastSeen).toDateString() === today)
+      const leaderboardPeers = Array.from(this.peers.values())
+        .filter((p) => new Date(p.lastSeen).toDateString() === today);
+      const peerStats = await this.store.getPeerDeliveryStats(leaderboardPeers.map((peer) => peer.peerId));
+      const siteHashes = Array.from(this.pageIndex.keys());
+      const siteStats = await this.store.getSiteDeliveryStats(siteHashes);
+
+      const leaderboard = leaderboardPeers
         .sort((a, b) => b.bytesUploaded - a.bytesUploaded)
         .slice(0, 20);
 
-      const topPages = Array.from(this.pageIndex.entries())
-        .map(([hash, peers]) => ({ hash, copies: peers.size }))
-        .sort((a, b) => b.copies - a.copies)
+      const topPages = siteHashes
+        .map((hash) => {
+          const peers = this.getActivePeersForHash(hash);
+          const title = peers
+            .map((peer) => peer.pageTitles?.[hash])
+            .find((value): value is string => !!value) || `Untitled ${hash.slice(0, 12)}`;
+          return {
+            hash,
+            title,
+            copies: peers.length,
+            pageVisits: siteStats.get(hash)?.pageVisits || 0,
+          };
+        })
+        .filter((page) => page.copies > 0)
+        .sort((a, b) => {
+          if (b.pageVisits !== a.pageVisits) {
+            return b.pageVisits - a.pageVisits;
+          }
+          return b.copies - a.copies;
+        })
         .slice(0, 50);
 
       const html = `<!doctype html>
@@ -214,22 +539,22 @@ class Tracker {
 
   <h2>Top peers (by upload bytes today)</h2>
   <table>
-    <tr><th>#</th><th>peerId</th><th>host:port</th><th>uploaded</th><th>downloaded</th><th>pages</th></tr>
+    <tr><th>#</th><th>peerId</th><th>host:port</th><th>uploaded</th><th>downloaded</th><th>pages served</th><th>pages</th></tr>
     ${leaderboard
       .map(
         (p, i) =>
-          `<tr><td>${i + 1}</td><td>${p.peerId}</td><td>${p.host}:${p.port}</td><td>${p.bytesUploaded}</td><td>${p.bytesDownloaded}</td><td>${p.pages.length}</td></tr>`
+          `<tr><td>${i + 1}</td><td>${p.peerId}</td><td>${this.getDisplayHost(p)}:${p.mappedPort || p.port}</td><td>${p.bytesUploaded}</td><td>${p.bytesDownloaded}</td><td>${peerStats.get(p.peerId)?.pageServes || 0}</td><td>${p.pages.length}</td></tr>`
       )
       .join('')}
   </table>
 
   <h2>Top page hashes</h2>
   <table>
-    <tr><th>#</th><th>hash</th><th>copies</th><th>view</th></tr>
+    <tr><th>#</th><th>title</th><th>hash</th><th>copies</th><th>page visits</th><th>view</th></tr>
     ${topPages
       .map(
         (p, i) =>
-          `<tr><td>${i + 1}</td><td><code>${p.hash}</code></td><td>${p.copies}</td><td><a href="/page/${p.hash}">open</a></td></tr>`
+          `<tr><td>${i + 1}</td><td>${p.title}</td><td><code>${p.hash}</code></td><td>${p.copies}</td><td>${p.pageVisits}</td><td><a href="/${p.hash}">open</a></td></tr>`
       )
       .join('')}
   </table>
@@ -245,6 +570,7 @@ class Tracker {
       const { hash } = req.params;
       const resolved = await this.resolvePage(hash);
       if (resolved.status === 'ready') {
+        await this.store.recordServe(resolved.peerId, hash, Buffer.byteLength(resolved.html));
         return res
           .status(200)
           .set('content-type', resolved.contentType)
@@ -283,14 +609,15 @@ class Tracker {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PubWeb Loading ${hash.slice(0, 12)}...</title>
   <style>
+    html, body { height: 100%; }
     body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #0b1220; color: #dbe7ff; }
-    .shell { min-height: 100vh; display: flex; flex-direction: column; }
+    .shell { height: 100%; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
     .top { padding: 14px 16px; border-bottom: 1px solid #1f2a44; background: #111a2f; }
     .title { font-size: 14px; opacity: .9; }
     .meta { font-size: 12px; opacity: .75; margin-top: 4px; word-break: break-all; }
     .status { padding: 16px; font-size: 14px; }
-    .frame-wrap { flex: 1; display: none; }
-    iframe { width: 100%; height: 100%; border: 0; background: white; }
+    .frame-wrap { flex: 1 1 auto; min-height: 0; display: none; }
+    iframe { width: 100%; height: 100%; min-height: 0; border: 0; background: white; }
     .dot::after { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 6px; background: #7aa2ff; animation: pulse 1s infinite ease-in-out; }
     @keyframes pulse { 0%{opacity:.3} 50%{opacity:1} 100%{opacity:.3} }
   </style>
@@ -317,7 +644,7 @@ class Tracker {
         const res = await fetch('/resolve/' + hash, { cache: 'no-store' });
         if (res.ok) {
           statusText.style.display = 'none';
-          frameWrap.style.display = 'block';
+          frameWrap.style.display = 'flex';
           frame.src = '/page/' + hash;
           return;
         }
@@ -354,8 +681,15 @@ class Tracker {
         count: activePeers.length,
         peers: activePeers.map((p) => ({
           peerId: p.peerId,
-          host: p.host,
+          host: this.getDisplayHost(p),
           port: p.port,
+          mappedPort: p.mappedPort,
+          observedIp: p.observedIp,
+          publicBaseUrl: p.publicBaseUrl,
+          natType: p.natType || 'unknown',
+          reachable: !!p.reachable,
+          relayRequired: !!p.relayRequired,
+          endpoints: p.endpoints || [],
           pages: p.pages.length,
         })),
       });
@@ -369,9 +703,32 @@ class Tracker {
 
   async start(port: number = 4000): Promise<void> {
     await this.store.init();
-    return new Promise((resolve) => {
-      this.app.listen(port, () => {
+    return new Promise((resolve, reject) => {
+      this.httpServer = this.app.listen(port, () => {
         console.log(`Tracker listening on port ${port}`);
+        resolve();
+      });
+
+      this.httpServer.once('error', (error) => {
+        this.httpServer = null;
+        reject(error);
+      });
+    });
+  }
+
+  async stop(): Promise<void> {
+    if (!this.httpServer) {
+      return;
+    }
+
+    const server = this.httpServer;
+    this.httpServer = null;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error?: Error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
         resolve();
       });
     });
@@ -385,4 +742,32 @@ tracker.start(parseInt(process.env.PORT || process.env.TRACKER_PORT || '4000')).
   console.log('Tracker started successfully');
 }).catch(err => {
   console.error('Tracker failed to start:', err);
+  process.exit(1);
+});
+
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+  console.log(`Received ${signal}, shutting down tracker...`);
+
+  try {
+    await tracker.stop();
+    console.log('Tracker shutdown complete');
+    process.exit(0);
+  } catch (err) {
+    console.error('Tracker shutdown failed:', err);
+    process.exit(1);
+  }
+}
+
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
+});
+
+process.on('SIGTERM', () => {
+  void shutdown('SIGTERM');
 });

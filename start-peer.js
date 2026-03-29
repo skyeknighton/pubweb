@@ -3,13 +3,42 @@ const { startPeerServer } = require('./dist/main/peer/server');
 
 async function startPeer() {
   console.log('Initializing database...');
-  const db = new Database('./pubweb.db');
+  const dbPath = process.env.PEER_DB_PATH || './pubweb.db';
+  const db = new Database(dbPath);
   await db.init();
   console.log('Database initialized');
 
   console.log('Starting peer server...');
   const server = await startPeerServer(db);
   console.log('Peer server started and running...');
+
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) {
+      return;
+    }
+
+    shuttingDown = true;
+    console.log(`Received ${signal}, shutting down peer...`);
+
+    try {
+      await server.stop();
+      db.close();
+      console.log('Peer shutdown complete');
+      process.exit(0);
+    } catch (err) {
+      console.error('Peer shutdown failed:', err);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGINT', () => {
+    void shutdown('SIGINT');
+  });
+
+  process.on('SIGTERM', () => {
+    void shutdown('SIGTERM');
+  });
 }
 
 startPeer().catch(err => {

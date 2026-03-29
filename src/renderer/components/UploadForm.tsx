@@ -1,5 +1,7 @@
 import React from 'react';
 
+const MAX_PAGE_BYTES = 1_474_560;
+
 export const UploadForm: React.FC<{ onUpload: (data: any) => void }> = ({ onUpload }) => {
   const [title, setTitle] = React.useState('');
   const [tags, setTags] = React.useState('');
@@ -28,7 +30,7 @@ export const UploadForm: React.FC<{ onUpload: (data: any) => void }> = ({ onUplo
   <h1>My First Chaosnet Page</h1>
   <div class="content">
     <p>Edit this HTML to create your page!</p>
-    <p>Remember: keep it under 1MB, include all assets inline.</p>
+    <p>Remember: keep it under 1.44MB, include all assets inline.</p>
   </div>
 </body>
 </html>`);
@@ -57,7 +59,7 @@ export const UploadForm: React.FC<{ onUpload: (data: any) => void }> = ({ onUplo
   };
 
   const htmlSize = Buffer.byteLength(html);
-  const sizePercent = (htmlSize / (1024 * 1024)) * 100;
+  const sizePercent = (htmlSize / MAX_PAGE_BYTES) * 100;
   const sizeStatus = sizePercent > 100 ? 'error' : sizePercent > 80 ? 'warning' : 'ok';
 
   return (
@@ -97,7 +99,7 @@ export const UploadForm: React.FC<{ onUpload: (data: any) => void }> = ({ onUplo
           required
         />
         <small>
-          Size: {(htmlSize / 1024).toFixed(2)} KB / 1024 KB
+          Size: {(htmlSize / 1024).toFixed(2)} KB / {(MAX_PAGE_BYTES / 1024).toFixed(0)} KB
           <span className={`status-${sizeStatus}`}>
             {sizeStatus === 'ok' ? ' ✓' : sizeStatus === 'warning' ? ' ⚠' : ' ✗'}
           </span>
@@ -107,7 +109,7 @@ export const UploadForm: React.FC<{ onUpload: (data: any) => void }> = ({ onUplo
         </button>
       </div>
 
-      <button type="submit" disabled={isLoading || htmlSize > 1024 * 1024}>
+      <button type="submit" disabled={isLoading || htmlSize > MAX_PAGE_BYTES}>
         {isLoading ? 'Uploading...' : 'Upload Page'}
       </button>
     </form>
