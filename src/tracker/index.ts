@@ -39,12 +39,14 @@ class Tracker {
   private store: TrackerStore;
   private replicationTarget: number;
   private onboardingHash: string;
+  private wrapperVersion: string;
 
   constructor() {
     const dbPath = process.env.TRACKER_DB_PATH || path.join(process.cwd(), 'tracker.db');
     this.store = new TrackerStore(dbPath);
     this.replicationTarget = parseInt(process.env.REPLICATION_TARGET || '2', 10);
     this.onboardingHash = process.env.PUBWEB_ONBOARDING_HASH || '2cdd7f0aba040460a0b4e1b8dbdc64fcafb669cee87f5ac547c6ecb8f781310f';
+    this.wrapperVersion = process.env.PUBWEB_WRAPPER_VERSION || process.env.RAILWAY_DEPLOYMENT_ID || String(Date.now());
     this.setupRoutes();
   }
 
@@ -652,6 +654,7 @@ class Tracker {
     <div class="top">
       <div class="title">PubWeb wrapper</div>
       <div class="meta">Hash: ${hash}</div>
+      <div class="meta">Wrapper version: ${this.escapeHtml(this.wrapperVersion)}</div>
     </div>
     <div class="status" id="statusText">Locating content across the network<span class="dot"></span></div>
     <div class="frame-wrap" id="frameWrap">
@@ -660,9 +663,91 @@ class Tracker {
   </div>
   <script>
     const hash = ${JSON.stringify(hash)};
+    const wrapperVersion = ${JSON.stringify(this.wrapperVersion)};
     const statusText = document.getElementById('statusText');
     const frameWrap = document.getElementById('frameWrap');
     const frame = document.getElementById('siteFrame');
+    window.__pubwebWrapperVersion = wrapperVersion;
+
+    function installExternalLinkEscape() {
+      let frameDoc;
+      try {
+        frameDoc = frame.contentDocument;
+      } catch (err) {
+        return;
+      }
+
+      if (!frameDoc) {
+        return;
+      }
+
+      function markExternalLinks() {
+        const links = frameDoc.querySelectorAll('a[href]');
+        for (const link of links) {
+          const href = link.getAttribute('href') || '';
+          if (!href || href.startsWith('#')) {
+            continue;
+          }
+
+          let destination;
+          try {
+            destination = new URL(link.href, frame.contentWindow ? frame.contentWindow.location.href : window.location.href);
+          } catch (err) {
+            continue;
+          }
+
+          if (destination.origin !== window.location.origin) {
+            link.setAttribute('target', '_top');
+            link.setAttribute('rel', 'noopener noreferrer external');
+          }
+        }
+      }
+
+      markExternalLinks();
+
+      const observer = new MutationObserver(() => {
+        markExternalLinks();
+      });
+      observer.observe(frameDoc.documentElement, { childList: true, subtree: true });
+
+      frameDoc.addEventListener('click', (event) => {
+        const rawTarget = event.target;
+        const target = rawTarget instanceof Element ? rawTarget : rawTarget && rawTarget.parentElement;
+        if (!target) {
+          return;
+        }
+
+        const link = target.closest('a[href]');
+        if (!link) {
+          return;
+        }
+
+        const href = link.getAttribute('href') || '';
+        if (!href || href.startsWith('#')) {
+          return;
+        }
+
+        let destination;
+        try {
+          destination = new URL(link.href, frame.contentWindow ? frame.contentWindow.location.href : window.location.href);
+        } catch (err) {
+          return;
+        }
+
+        if (destination.origin === window.location.origin) {
+          return;
+        }
+
+        event.preventDefault();
+        window.top.location.assign(destination.toString());
+      }, true);
+
+      frame.addEventListener('load', () => {
+        observer.disconnect();
+      }, { once: true });
+    }
+
+    frame.addEventListener('load', installExternalLinkEscape);
 
     async function checkReady() {
       try {
@@ -693,7 +778,13 @@ class Tracker {
 </body>
 </html>`;
 
-      res.status(200).set('content-type', 'text/html; charset=utf-8').send(html);
+      res.status(200)
+        .set('content-type', 'text/html; charset=utf-8')
+        .set('cache-control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0')
+        .set('pragma', 'no-cache')
+        .set('expires', '0')
+        .set('x-pubweb-wrapper-version', this.wrapperVersion)
+        .send(html);
     });
 
     // Get all peers
