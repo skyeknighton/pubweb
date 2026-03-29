@@ -40,6 +40,10 @@ class Tracker {
   private replicationTarget: number;
   private onboardingHash: string;
   private wrapperVersion: string;
+  private exposePeerNetworkDetails: boolean;
+  private requestCounters: Map<string, { count: number; resetAt: number }> = new Map();
+  private firstSignerByHash: Map<string, string> = new Map();
+  private requireSignedPages: boolean;
 
   constructor() {
     const dbPath = process.env.TRACKER_DB_PATH || path.join(process.cwd(), 'tracker.db');
@@ -47,7 +51,101 @@ class Tracker {
     this.replicationTarget = parseInt(process.env.REPLICATION_TARGET || '2', 10);
     this.onboardingHash = process.env.PUBWEB_ONBOARDING_HASH || '2cdd7f0aba040460a0b4e1b8dbdc64fcafb669cee87f5ac547c6ecb8f781310f';
     this.wrapperVersion = process.env.PUBWEB_WRAPPER_VERSION || process.env.RAILWAY_DEPLOYMENT_ID || String(Date.now());
+    this.exposePeerNetworkDetails = process.env.TRACKER_EXPOSE_PEER_DETAILS === 'true';
+    this.requireSignedPages = process.env.TRACKER_REQUIRE_SIGNED_PAGES === 'true';
     this.setupRoutes();
+  }
+
+  private static isValidHash(value: unknown): value is string {
+    return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+  }
+
+  private getClientIp(req: Request): string {
+    return this.extractObservedIp(req) || 'unknown';
+  }
+
+  private checkRateLimit(key: string, maxRequests: number, windowMs: number): boolean {
+    const now = Date.now();
+    const current = this.requestCounters.get(key);
+    if (!current || current.resetAt <= now) {
+      this.requestCounters.set(key, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+
+    if (current.count >= maxRequests) {
+      return false;
+    }
+
+    current.count += 1;
+    return true;
+  }
+
+  private isPrivateOrLoopbackHost(host: string): boolean {
+    const value = host.toLowerCase();
+    if (value === 'localhost' || value === '::1' || value === '0.0.0.0') {
+      return true;
+    }
+
+    if (/^127\./.test(value) || /^10\./.test(value) || /^192\.168\./.test(value)) {
+      return true;
+    }
+
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(value)) {
+      return true;
+    }
+
+    if (value.startsWith('fc') || value.startsWith('fd') || value.startsWith('fe80:')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private normalizePublicBaseUrl(value: unknown): string | undefined {
+    if (typeof value !== 'string' || !value.trim()) {
+      return undefined;
+    }
+
+    try {
+      const parsed = new URL(value.trim());
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return undefined;
+      }
+
+      if (this.isPrivateOrLoopbackHost(parsed.hostname)) {
+        return undefined;
+      }
+
+      parsed.hash = '';
+      parsed.search = '';
+      return parsed.toString().replace(/\/+$/, '');
+    } catch {
+      return undefined;
+    }
+  }
+
+  private canonicalManifest(hash: string, title: string, created: number, signerPeerId: string): string {
+    return JSON.stringify({
+      hash,
+      title,
+      created,
+      version: 1,
+      signerPeerId,
+    });
+  }
+
+  private verifySummarySignature(summary: { hash: string; title: string; created: number; signerPeerId: string; signature: string; signerPublicKey: string }): boolean {
+    try {
+      const manifest = this.canonicalManifest(summary.hash, summary.title, summary.created, summary.signerPeerId);
+      return crypto.verify(
+        null,
+        Buffer.from(manifest, 'utf8'),
+        summary.signerPublicKey,
+        Buffer.from(summary.signature, 'base64')
+      );
+    } catch {
+      return false;
+    }
   }
 
   private escapeHtml(value: string): string {
@@ -108,12 +206,15 @@ class Tracker {
     const candidateBases = new Set<string>();
 
     if (peer.publicBaseUrl) {
-      candidateBases.add(peer.publicBaseUrl.replace(/\/+$/, ''));
+      const normalized = this.normalizePublicBaseUrl(peer.publicBaseUrl);
+      if (normalized) {
+        candidateBases.add(normalized);
+      }
     }
 
     const displayHost = this.getDisplayHost(peer);
     const mappedPort = peer.mappedPort || peer.port;
-    if (displayHost && mappedPort) {
+    if (displayHost && mappedPort && !this.isPrivateOrLoopbackHost(displayHost)) {
       candidateBases.add(`http://${displayHost}:${mappedPort}`);
     }
 
@@ -217,10 +318,20 @@ class Tracker {
   private buildPeerPageUrl(peer: TrackerEntry, hash: string): string {
     const publicEndpoint = (peer.endpoints || []).find((endpoint) => endpoint.kind === 'public' && endpoint.reachable);
     if (publicEndpoint) {
-      return `${publicEndpoint.url.replace(/\/+$/, '')}/page/${hash}`;
+      const normalized = this.normalizePublicBaseUrl(publicEndpoint.url);
+      if (normalized) {
+        return `${normalized}/page/${hash}`;
+      }
     }
     if (peer.publicBaseUrl) {
-      return `${peer.publicBaseUrl.replace(/\/+$/, '')}/page/${hash}`;
+      const normalized = this.normalizePublicBaseUrl(peer.publicBaseUrl);
+      if (normalized) {
+        return `${normalized}/page/${hash}`;
+      }
+    }
+
+    if (this.isPrivateOrLoopbackHost(this.getFetchHost(peer))) {
+      return '';
     }
     return `http://${this.getFetchHost(peer)}:${peer.port}/page/${hash}`;
   }
@@ -241,6 +352,10 @@ class Tracker {
     let lastReason = 'Failed to reach active peer, retrying.';
     for (const candidate of candidates) {
       const target = this.buildPeerPageUrl(candidate, hash);
+      if (!target) {
+        lastReason = 'Peer endpoint blocked by tracker security policy.';
+        continue;
+      }
       try {
         const upstream = await fetch(target);
         if (!upstream.ok) {
@@ -260,11 +375,24 @@ class Tracker {
   }
 
   private setupRoutes() {
+    this.app.disable('x-powered-by');
+    this.app.use((req, res, next) => {
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.setHeader('referrer-policy', 'no-referrer');
+      res.setHeader('x-frame-options', 'SAMEORIGIN');
+      res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=()');
+      next();
+    });
     this.app.use(express.json());
 
     this.app.post('/v1/peer/heartbeat', async (req, res) => {
+      const rateKey = `heartbeat:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 120, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+
       const payload = req.body as PeerHeartbeatPayload;
-      if (!payload?.peerId) {
+      if (!payload?.peerId || typeof payload.peerId !== 'string' || payload.peerId.length > 128) {
         return res.status(400).json({ error: 'Missing peerId' });
       }
 
@@ -286,6 +414,11 @@ class Tracker {
 
     this.app.get('/v1/peer/assignments', async (req, res) => {
       const peerId = String(req.query.peerId || '').trim();
+      const rateKey = `assignments:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 240, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+
       if (!peerId) {
         return res.status(400).json({ error: 'Missing peerId query param' });
       }
@@ -322,13 +455,20 @@ class Tracker {
     this.app.post('/announce', async (req, res) => {
       const { peerId, host, port, publicBaseUrl, mappedPort, natType, reachable, relayRequired, endpoints, pages, pageSummaries, bytesUploaded, bytesDownloaded } = req.body;
 
-      if (!peerId || !host || !port) {
+      const rateKey = `announce:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 120, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+
+      const parsedPort = parseInt(String(port), 10);
+      if (!peerId || typeof peerId !== 'string' || peerId.length > 128 || !host || typeof host !== 'string' || !parsedPort || parsedPort < 1 || parsedPort > 65535) {
         return res.status(400).json({ error: 'Missing peer info' });
       }
 
       const observedIp = this.extractObservedIp(req);
       const summaryList = Array.isArray(pageSummaries) ? pageSummaries : [];
       const pageTitles: Record<string, string> = {};
+      const acceptedSummaryHashes = new Set<string>();
       for (const summary of summaryList) {
         if (!summary || typeof summary !== 'object') {
           continue;
@@ -336,28 +476,78 @@ class Tracker {
 
         const hash = typeof summary.hash === 'string' ? summary.hash : '';
         const title = this.sanitizeTitleInput(summary.title);
-        if (!/^[a-fA-F0-9]{64}$/.test(hash) || !title) {
+        if (!Tracker.isValidHash(hash) || !title) {
           continue;
         }
 
+        const signerPeerId = typeof summary.signerPeerId === 'string' ? summary.signerPeerId : '';
+        const signature = typeof summary.signature === 'string' ? summary.signature : '';
+        const signerPublicKey = typeof summary.signerPublicKey === 'string' ? summary.signerPublicKey : '';
+        const hasSignature = !!(signerPeerId && signature && signerPublicKey);
+
+        if (this.requireSignedPages && !hasSignature) {
+          continue;
+        }
+
+        if (hasSignature) {
+          const verified = this.verifySummarySignature({
+            hash,
+            title,
+            created: Number(summary.created) || 0,
+            signerPeerId,
+            signature,
+            signerPublicKey,
+          });
+          if (!verified || signerPeerId !== peerId) {
+            continue;
+          }
+
+          const firstSigner = this.firstSignerByHash.get(hash);
+          if (!firstSigner) {
+            this.firstSignerByHash.set(hash, signerPeerId);
+          } else if (firstSigner !== signerPeerId) {
+            continue;
+          }
+        }
+
         pageTitles[hash] = title;
+        acceptedSummaryHashes.add(hash);
       }
+
+      const announcedPages = Array.isArray(pages)
+        ? pages.filter((pageHash) => Tracker.isValidHash(pageHash))
+        : [];
+
+      const filteredPages = this.requireSignedPages
+        ? announcedPages.filter((pageHash) => acceptedSummaryHashes.has(pageHash))
+        : announcedPages;
 
       const peer: TrackerEntry = {
         peerId,
         host,
-        port,
+        port: parsedPort,
         observedIp,
-        publicBaseUrl,
-        mappedPort,
-        natType,
-        reachable: typeof reachable === 'boolean' ? reachable : !!publicBaseUrl,
+        publicBaseUrl: this.normalizePublicBaseUrl(publicBaseUrl),
+        mappedPort: Number.isFinite(parseInt(String(mappedPort), 10)) ? parseInt(String(mappedPort), 10) : undefined,
+        natType: typeof natType === 'string' ? natType.slice(0, 32) : undefined,
+        reachable: typeof reachable === 'boolean' ? reachable : !!this.normalizePublicBaseUrl(publicBaseUrl),
         relayRequired: typeof relayRequired === 'boolean' ? relayRequired : false,
-        endpoints: Array.isArray(endpoints) ? endpoints : [],
-        pages: pages || [],
+        endpoints: Array.isArray(endpoints)
+          ? endpoints
+            .filter((endpoint) => endpoint && typeof endpoint === 'object' && typeof endpoint.url === 'string')
+            .slice(0, 10)
+            .map((endpoint): PeerEndpoint => ({
+              kind: endpoint.kind === 'public' ? 'public' : 'local',
+              url: endpoint.kind === 'public' ? (this.normalizePublicBaseUrl(endpoint.url) || '') : String(endpoint.url),
+              reachable: !!endpoint.reachable,
+              source: endpoint.source === 'upnp' || endpoint.source === 'config' ? endpoint.source : 'local',
+            }))
+            .filter((endpoint) => endpoint.kind !== 'public' || !!endpoint.url)
+          : [],
+        pages: filteredPages,
         pageTitles,
-        bytesUploaded: bytesUploaded || 0,
-        bytesDownloaded: bytesDownloaded || 0,
+        bytesUploaded: Math.max(0, Number(bytesUploaded) || 0),
+        bytesDownloaded: Math.max(0, Number(bytesDownloaded) || 0),
         lastSeen: Date.now(),
       };
 
@@ -365,7 +555,7 @@ class Tracker {
       void this.probePeer(peer);
 
       // Update page index
-      for (const pageHash of pages || []) {
+      for (const pageHash of filteredPages) {
         if (!this.pageIndex.has(pageHash)) {
           this.pageIndex.set(pageHash, new Set());
         }
@@ -381,6 +571,11 @@ class Tracker {
     });
 
     this.app.get('/discover', async (req, res) => {
+      const rateKey = `discover:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 240, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+
       const q = String(req.query.q || '').trim().toLowerCase();
       const limit = Math.max(1, Math.min(parseInt(String(req.query.limit || '25'), 10) || 25, 100));
       const now = Date.now();
@@ -434,6 +629,9 @@ class Tracker {
     // Query peers for a page
     this.app.get('/query/:hash', (req, res) => {
       const { hash } = req.params;
+      if (!Tracker.isValidHash(hash)) {
+        return res.status(400).json({ error: 'Invalid hash format' });
+      }
       const peerList = this.getActivePeersForHash(hash);
 
       if (peerList.length === 0) {
@@ -446,6 +644,9 @@ class Tracker {
     // Swarm-style peer discovery for a specific hash
     this.app.get('/v1/swarm/:hash/peers', (req, res) => {
       const { hash } = req.params;
+      if (!Tracker.isValidHash(hash)) {
+        return res.status(400).json({ error: 'Invalid hash format' });
+      }
       const requesterPeerId = String(req.query.peerId || '').trim();
       const max = Math.max(1, Math.min(parseInt(String(req.query.max || '20'), 10) || 20, 100));
 
@@ -472,13 +673,13 @@ class Tracker {
           peerId: p.peerId,
           host: this.getDisplayHost(p),
           port: p.port,
-          mappedPort: p.mappedPort,
-          observedIp: p.observedIp,
-          publicBaseUrl: p.publicBaseUrl,
+          mappedPort: this.exposePeerNetworkDetails ? p.mappedPort : undefined,
+          observedIp: this.exposePeerNetworkDetails ? p.observedIp : undefined,
+          publicBaseUrl: this.exposePeerNetworkDetails ? p.publicBaseUrl : undefined,
           natType: p.natType || 'unknown',
           reachable: !!p.reachable,
           relayRequired: !!p.relayRequired,
-          endpoints: p.endpoints || [],
+          endpoints: this.exposePeerNetworkDetails ? (p.endpoints || []) : undefined,
           lastSeen: p.lastSeen,
           pageUrl: this.buildPeerPageUrl(p, hash),
         }));
@@ -595,6 +796,9 @@ class Tracker {
     // Fetch from a peer and return content directly (works behind cPanel routing)
     this.app.get('/page/:hash', async (req, res) => {
       const { hash } = req.params;
+      if (!Tracker.isValidHash(hash)) {
+        return res.status(400).json({ error: 'Invalid hash format' });
+      }
       const resolved = await this.resolvePage(hash);
       if (resolved.status === 'ready') {
         await this.store.recordServe(resolved.peerId, hash, Buffer.byteLength(resolved.html));
@@ -614,6 +818,9 @@ class Tracker {
 
     this.app.get('/resolve/:hash', async (req, res) => {
       const { hash } = req.params;
+      if (!Tracker.isValidHash(hash)) {
+        return res.status(400).json({ status: 'missing', reason: 'Invalid hash format' });
+      }
       const resolved = await this.resolvePage(hash);
 
       if (resolved.status === 'ready') {
@@ -634,6 +841,7 @@ class Tracker {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>PubWeb Loading ${hash.slice(0, 12)}...</title>
   <style>
     html, body { height: 100%; }
@@ -658,7 +866,7 @@ class Tracker {
     </div>
     <div class="status" id="statusText">Locating content across the network<span class="dot"></span></div>
     <div class="frame-wrap" id="frameWrap">
-      <iframe id="siteFrame" title="PubWeb Site"></iframe>
+      <iframe id="siteFrame" title="PubWeb Site" sandbox="allow-scripts allow-same-origin"></iframe>
     </div>
   </div>
   <script>
@@ -696,7 +904,7 @@ class Tracker {
             continue;
           }
 
-          if (destination.origin !== window.location.origin) {
+          if ((destination.protocol === 'http:' || destination.protocol === 'https:') && destination.origin !== window.location.origin) {
             link.setAttribute('target', '_top');
             link.setAttribute('rel', 'noopener noreferrer external');
           }
@@ -735,6 +943,10 @@ class Tracker {
         }
 
         if (destination.origin === window.location.origin) {
+          return;
+        }
+
+        if (destination.protocol !== 'http:' && destination.protocol !== 'https:') {
           return;
         }
 
@@ -781,6 +993,7 @@ class Tracker {
       res.status(200)
         .set('content-type', 'text/html; charset=utf-8')
         .set('cache-control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0')
+        .set('content-security-policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'")
         .set('pragma', 'no-cache')
         .set('expires', '0')
         .set('x-pubweb-wrapper-version', this.wrapperVersion)
@@ -799,13 +1012,13 @@ class Tracker {
           peerId: p.peerId,
           host: this.getDisplayHost(p),
           port: p.port,
-          mappedPort: p.mappedPort,
-          observedIp: p.observedIp,
-          publicBaseUrl: p.publicBaseUrl,
+          mappedPort: this.exposePeerNetworkDetails ? p.mappedPort : undefined,
+          observedIp: this.exposePeerNetworkDetails ? p.observedIp : undefined,
+          publicBaseUrl: this.exposePeerNetworkDetails ? p.publicBaseUrl : undefined,
           natType: p.natType || 'unknown',
           reachable: !!p.reachable,
           relayRequired: !!p.relayRequired,
-          endpoints: p.endpoints || [],
+          endpoints: this.exposePeerNetworkDetails ? (p.endpoints || []) : undefined,
           pages: p.pages.length,
         })),
       });

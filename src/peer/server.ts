@@ -7,6 +7,8 @@ const NatAPI = require('nat-api');
 
 const TRACKER_URL = process.env.TRACKER_URL || 'http://localhost:4000';
 const PEER_ID_SETTING_KEY = 'peer.identity.id';
+const PEER_PRIVATE_KEY_SETTING_KEY = 'peer.identity.privateKey';
+const PEER_PUBLIC_KEY_SETTING_KEY = 'peer.identity.publicKey';
 const PEER_PORT_SETTING_KEY = 'peer.localPort';
 const MIN_DYNAMIC_PORT = 49152;
 const MAX_DYNAMIC_PORT = 65535;
@@ -37,6 +39,9 @@ interface AnnouncePageSummary {
   hash: string;
   title: string;
   created: number;
+  signerPeerId: string;
+  signature: string;
+  signerPublicKey: string;
 }
 
 function pickRandomHighPort(): number {
@@ -68,15 +73,20 @@ class PeerServer {
   private natClient: any | null = null;
   private httpServer: Server | null = null;
   private maxPageBytes: number;
+  private signerPrivateKey: string;
+  private signerPublicKey: string;
+  private requestCounters: Map<string, { count: number; resetAt: number }> = new Map();
 
   public port: number = 3000;
   public isListening: boolean = false;
   public peerCount: number = 0;
   private pages: Set<string> = new Set();
 
-  constructor(db: Database, peerId: string) {
+  constructor(db: Database, peerId: string, signerPrivateKey: string, signerPublicKey: string) {
     this.db = db;
     this.peerId = peerId;
+    this.signerPrivateKey = signerPrivateKey;
+    this.signerPublicKey = signerPublicKey;
     this.app = express();
     this.publicHost = process.env.PUBLIC_HOST || process.env.TUNNEL_HOST || 'localhost';
     this.publicBaseUrl = process.env.PUBLIC_BASE_URL;
@@ -88,6 +98,50 @@ class PeerServer {
       ? configuredMaxPageBytes
       : DEFAULT_MAX_PAGE_BYTES;
     this.setupRoutes();
+  }
+
+  private getClientIp(req: express.Request): string {
+    const forwarded = req.headers['x-forwarded-for'];
+    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    const raw = (forwardedValue || req.socket.remoteAddress || req.ip || '').split(',')[0].trim();
+    return raw.replace(/^::ffff:/, '') || 'unknown';
+  }
+
+  private checkRateLimit(key: string, maxRequests: number, windowMs: number): boolean {
+    const now = Date.now();
+    const current = this.requestCounters.get(key);
+    if (!current || current.resetAt <= now) {
+      this.requestCounters.set(key, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+
+    if (current.count >= maxRequests) {
+      return false;
+    }
+
+    current.count += 1;
+    return true;
+  }
+
+  private static isValidHash(value: string): boolean {
+    return /^[a-f0-9]{64}$/i.test(value);
+  }
+
+  private createSignedPageManifest(hash: string, title: string, created: number): { signerPeerId: string; signature: string; signerPublicKey: string } {
+    const manifest = JSON.stringify({
+      hash,
+      title,
+      created,
+      version: 1,
+      signerPeerId: this.peerId,
+    });
+
+    const signature = crypto.sign(null, Buffer.from(manifest, 'utf8'), this.signerPrivateKey).toString('base64');
+    return {
+      signerPeerId: this.peerId,
+      signature,
+      signerPublicKey: this.signerPublicKey,
+    };
   }
 
   public getPeerId(): string {
@@ -255,6 +309,9 @@ class PeerServer {
           hash: summary.hash,
           title: summary.title,
           created: summary.created,
+          signerPeerId: summary.signerPeerId || this.peerId,
+          signature: summary.signature || '',
+          signerPublicKey: summary.signerPublicKey || this.signerPublicKey,
         }));
       const reachability = this.inferReachability();
       console.log(`Announcing ${pages.length} pages to tracker at ${TRACKER_URL}`);
@@ -288,11 +345,28 @@ class PeerServer {
   }
 
   private setupRoutes() {
+    this.app.disable('x-powered-by');
+    this.app.use((req, res, next) => {
+      res.setHeader('x-content-type-options', 'nosniff');
+      res.setHeader('referrer-policy', 'no-referrer');
+      res.setHeader('x-frame-options', 'SAMEORIGIN');
+      res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=()');
+      next();
+    });
     this.app.use(express.json({ limit: this.maxPageBytes }));
 
     // Serve a page by hash
     this.app.get('/page/:hash', async (req, res) => {
       const { hash } = req.params;
+      if (!PeerServer.isValidHash(hash)) {
+        return res.status(400).json({ error: 'Invalid hash format' });
+      }
+
+      const rateKey = `page:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 300, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+
       const page = await this.db.getPageByHash(hash);
       
       if (!page) {
@@ -300,6 +374,7 @@ class PeerServer {
       }
 
       res.set('Content-Type', 'text/html; charset=utf-8');
+      res.set('cache-control', 'no-store');
       res.send(page.html);
       
       // Update stats
@@ -309,8 +384,12 @@ class PeerServer {
     // Publish a page
     this.app.post('/publish', async (req, res) => {
       const { html, title, tags } = req.body;
+      const rateKey = `publish:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 30, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
       
-      if (!html) {
+      if (typeof html !== 'string' || !html.trim()) {
         return res.status(400).json({ error: 'Missing HTML' });
       }
 
@@ -326,7 +405,9 @@ class PeerServer {
       const hash = crypto.createHash('sha256').update(html).digest('hex');
       const inferredTitle = this.extractTitleFromHtml(html, `Untitled ${hash.slice(0, 12)}`);
       const providedTitle = typeof title === 'string' ? title.trim() : '';
-      const finalTitle = providedTitle || inferredTitle;
+      const finalTitle = (providedTitle || inferredTitle).replace(/\s+/g, ' ').trim().slice(0, 160);
+      const created = Date.now();
+      const signedManifest = this.createSignedPageManifest(hash, finalTitle, created);
       const existingPage = await this.db.getPageByHash(hash);
 
       const pageId = await this.db.addPage({
@@ -334,6 +415,10 @@ class PeerServer {
         title: finalTitle,
         tags: Array.isArray(tags) ? tags : [],
         author: 'peer',
+        signerPeerId: signedManifest.signerPeerId,
+        signature: signedManifest.signature,
+        signerPublicKey: signedManifest.signerPublicKey,
+        created,
       });
 
       const shouldRefreshExistingTitle = !existingPage || this.isPlaceholderTitle(existingPage.title);
@@ -346,12 +431,23 @@ class PeerServer {
 
       await this.announceTracker();
 
-      res.json({ success: true, hash, pageId, size: htmlBytes, maxPageBytes: this.maxPageBytes });
+      res.json({
+        success: true,
+        hash,
+        pageId,
+        size: htmlBytes,
+        maxPageBytes: this.maxPageBytes,
+        signerPeerId: signedManifest.signerPeerId,
+        signature: signedManifest.signature,
+      });
     });
 
     // Get page metadata
     this.app.get('/page/:hash/meta', async (req, res) => {
       const { hash } = req.params;
+      if (!PeerServer.isValidHash(hash)) {
+        return res.status(400).json({ error: 'Invalid hash format' });
+      }
       const page = await this.db.getPageByHash(hash);
       
       if (!page) {
@@ -366,6 +462,9 @@ class PeerServer {
         version: page.version,
         size: Buffer.byteLength(page.html),
         downloads: page.downloads,
+        signerPeerId: page.signerPeerId,
+        signature: page.signature,
+        signerPublicKey: page.signerPublicKey,
       });
     });
 
@@ -603,7 +702,17 @@ export async function startPeerServer(db: Database): Promise<PeerServer> {
     await db.setSetting(PEER_ID_SETTING_KEY, peerId);
   }
 
-  const server = new PeerServer(db, peerId);
+  let signerPrivateKey = await db.getSetting(PEER_PRIVATE_KEY_SETTING_KEY);
+  let signerPublicKey = await db.getSetting(PEER_PUBLIC_KEY_SETTING_KEY);
+  if (!signerPrivateKey || !signerPublicKey) {
+    const pair = crypto.generateKeyPairSync('ed25519');
+    signerPrivateKey = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    signerPublicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    await db.setSetting(PEER_PRIVATE_KEY_SETTING_KEY, signerPrivateKey);
+    await db.setSetting(PEER_PUBLIC_KEY_SETTING_KEY, signerPublicKey);
+  }
+
+  const server = new PeerServer(db, peerId, signerPrivateKey, signerPublicKey);
   const explicitPortRaw = process.env.PORT || process.env.PEER_PORT;
   if (explicitPortRaw) {
     const explicitPort = parseInt(explicitPortRaw, 10);

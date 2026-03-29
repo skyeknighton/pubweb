@@ -11,6 +11,9 @@ export interface Page {
   version: number;
   created: number;
   downloads: number;
+  signerPeerId?: string;
+  signature?: string;
+  signerPublicKey?: string;
 }
 
 export interface Stats {
@@ -23,6 +26,9 @@ export interface PageSummary {
   hash: string;
   title: string;
   created: number;
+  signerPeerId?: string;
+  signature?: string;
+  signerPublicKey?: string;
 }
 
 export class Database {
@@ -33,7 +39,7 @@ export class Database {
   }
 
   async init(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       this.db.serialize(() => {
         // Pages table
         this.db.run(`
@@ -46,7 +52,10 @@ export class Database {
             tags TEXT,
             version INTEGER DEFAULT 1,
             created INTEGER,
-            downloads INTEGER DEFAULT 0
+            downloads INTEGER DEFAULT 0,
+            signer_peer_id TEXT,
+            signature TEXT,
+            signer_public_key TEXT
           )
         `);
 
@@ -83,6 +92,10 @@ export class Database {
           else resolve();
         });
       });
+    }).then(async () => {
+      await this.ensureColumn('pages', 'signer_peer_id', 'TEXT');
+      await this.ensureColumn('pages', 'signature', 'TEXT');
+      await this.ensureColumn('pages', 'signer_public_key', 'TEXT');
     });
   }
 
@@ -91,15 +104,20 @@ export class Database {
     title: string;
     tags: string[];
     author: string;
+    signerPeerId?: string;
+    signature?: string;
+    signerPublicKey?: string;
+    created?: number;
   }): Promise<string> {
     const id = crypto.randomUUID();
     const hash = crypto.createHash('sha256').update(data.html).digest('hex');
     const bytes = Buffer.byteLength(data.html);
+    const created = data.created || Date.now();
 
     return new Promise((resolve, reject) => {
       this.db.run(
-        `INSERT INTO pages (id, hash, html, title, author, tags, created)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pages (id, hash, html, title, author, tags, created, signer_peer_id, signature, signer_public_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           hash,
@@ -107,7 +125,10 @@ export class Database {
           data.title,
           data.author,
           JSON.stringify(data.tags),
-          Date.now(),
+          created,
+          data.signerPeerId || null,
+          data.signature || null,
+          data.signerPublicKey || null,
         ],
         (err) => {
           if (err) {
@@ -124,6 +145,18 @@ export class Database {
                 if (lookupErr) {
                   reject(lookupErr);
                 } else if (row?.id) {
+                  if (data.signerPeerId && data.signature && data.signerPublicKey) {
+                    this.db.run(
+                      `UPDATE pages
+                       SET signer_peer_id = COALESCE(signer_peer_id, ?),
+                           signature = COALESCE(signature, ?),
+                           signer_public_key = COALESCE(signer_public_key, ?)
+                       WHERE hash = ?`,
+                      [data.signerPeerId, data.signature, data.signerPublicKey, hash],
+                      () => resolve(row.id)
+                    );
+                    return;
+                  }
                   resolve(row.id);
                 } else {
                   reject(err);
@@ -156,8 +189,18 @@ export class Database {
           if (err) reject(err);
           else if (row) {
             resolve({
-              ...row,
+              id: row.id,
+              hash: row.hash,
+              html: row.html,
+              title: row.title,
+              author: row.author,
+              version: row.version,
+              created: row.created,
+              downloads: row.downloads,
               tags: JSON.parse(row.tags || '[]'),
+              signerPeerId: row.signer_peer_id || undefined,
+              signature: row.signature || undefined,
+              signerPublicKey: row.signer_public_key || undefined,
             });
           } else {
             resolve(null);
@@ -177,8 +220,18 @@ export class Database {
           else {
             resolve(
               rows.map((r) => ({
-                ...r,
+                id: r.id,
+                hash: r.hash,
+                html: r.html,
+                title: r.title,
+                author: r.author,
+                version: r.version,
+                created: r.created,
+                downloads: r.downloads,
                 tags: JSON.parse(r.tags || '[]'),
+                signerPeerId: r.signer_peer_id || undefined,
+                signature: r.signature || undefined,
+                signerPublicKey: r.signer_public_key || undefined,
               }))
             );
           }
@@ -203,9 +256,9 @@ export class Database {
   async getPageSummaries(limit: number = 500): Promise<PageSummary[]> {
     return new Promise((resolve, reject) => {
       this.db.all(
-        'SELECT hash, title, created FROM pages ORDER BY created DESC LIMIT ?',
+        'SELECT hash, title, created, signer_peer_id, signature, signer_public_key FROM pages ORDER BY created DESC LIMIT ?',
         [limit],
-        (err, rows: Array<{ hash: string; title: string | null; created: number }>) => {
+        (err, rows: Array<{ hash: string; title: string | null; created: number; signer_peer_id: string | null; signature: string | null; signer_public_key: string | null }>) => {
           if (err) {
             reject(err);
             return;
@@ -216,6 +269,9 @@ export class Database {
               hash: row.hash,
               title: (row.title || '').trim() || `Untitled ${row.hash.slice(0, 12)}`,
               created: row.created || 0,
+              signerPeerId: row.signer_peer_id || undefined,
+              signature: row.signature || undefined,
+              signerPublicKey: row.signer_public_key || undefined,
             }))
           );
         }
@@ -348,5 +404,31 @@ export class Database {
 
   close(): void {
     this.db.close();
+  }
+
+  private async ensureColumn(table: string, column: string, definition: string): Promise<void> {
+    const columns = await new Promise<string[]>((resolve, reject) => {
+      this.db.all(`PRAGMA table_info(${table})`, (err, rows: Array<{ name: string }>) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve((rows || []).map((row) => row.name));
+      });
+    });
+
+    if (columns.includes(column)) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`, (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 }
