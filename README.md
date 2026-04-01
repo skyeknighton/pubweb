@@ -340,7 +340,9 @@ POST /discover                # Peer discovery
 ### Tracker Server (`:4000`)
 ```
 POST /announce                # Register peer
+GET  /                        # Mobile landing (redirects to /share-image)
 GET  /share-image             # Mobile image uploader UI
+GET  /network                 # Tracker dashboard (peers + top hashes)
 POST /v1/publish              # Tracker publish proxy to active peers
 GET  /query/:hash             # Find peers with page
 GET  /leaderboard             # Daily top uploaders

@@ -2,6 +2,7 @@ import express, { Request } from 'express';
 import crypto from 'crypto';
 import { Server } from 'http';
 import path from 'path';
+import QRCode from 'qrcode';
 import { TrackerStore, PeerHeartbeatPayload } from './store';
 // import config from '../../config.json';
 
@@ -481,6 +482,36 @@ class Tracker {
     });
     this.app.use(express.json({ limit: '2mb' }));
 
+    this.app.get('/qr/:hash.svg', async (req, res) => {
+      const { hash } = req.params;
+      if (!Tracker.isValidHash(hash)) {
+        return res.status(400).json({ error: 'Invalid hash format' });
+      }
+
+      const requestedSize = parseInt(String(req.query.size || '260'), 10);
+      const size = Number.isFinite(requestedSize)
+        ? Math.max(120, Math.min(requestedSize, 1024))
+        : 260;
+      const targetUrl = `${req.protocol}://${req.get('host')}/${hash}`;
+
+      try {
+        const svg = await QRCode.toString(targetUrl, {
+          type: 'svg',
+          margin: 1,
+          width: size,
+          errorCorrectionLevel: 'M',
+        });
+
+        return res.status(200)
+          .set('content-type', 'image/svg+xml; charset=utf-8')
+          .set('cache-control', 'public, max-age=86400')
+          .send(svg);
+      } catch (err) {
+        console.error('QR generation failed:', err);
+        return res.status(500).json({ error: 'Failed to generate QR code' });
+      }
+    });
+
     this.app.get('/share-image', (req, res) => {
       const html = `<!doctype html>
 <html lang="en">
@@ -699,7 +730,7 @@ class Tracker {
         '<div class="pic-wrap"><img class="main" src="' + dataUrl + '" alt="Shared image" /></div>' +
         (safeCaption ? '<div class="cap">' + safeCaption + '</div>' : '') +
         '<div class="cta"><a href="/share-image">Share your own image</a></div>' +
-        '<script>const q=document.getElementById("qrToggle"),b=document.getElementById("qrBlock"),img=document.getElementById("qrImgLocal");const share=location.href;img.src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data="+encodeURIComponent(share);q.addEventListener("click",()=>{b.style.display=b.style.display==="block"?"none":"block";});<\/script>' +
+        '<script>const q=document.getElementById("qrToggle"),b=document.getElementById("qrBlock"),img=document.getElementById("qrImgLocal");const m=(location.pathname||"").match(/[a-f0-9]{64}/i);if(m&&m[0]){img.src="/qr/"+m[0]+".svg?size=220";}q.addEventListener("click",()=>{b.style.display=b.style.display==="block"?"none":"block";});<\/script>' +
         '</body></html>';
     }
 
@@ -748,7 +779,7 @@ class Tracker {
         const finalUrl = location.origin + '/' + result.hash;
         shareLink.href = finalUrl;
         shareLink.textContent = finalUrl;
-        qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=' + encodeURIComponent(finalUrl);
+        qrImg.src = '/qr/' + result.hash + '.svg?size=240';
         successBox.style.display = 'block';
         statusEl.textContent = 'Published. Share the link or scan the QR.';
       } catch (err) {
@@ -1174,8 +1205,13 @@ class Tracker {
       res.json({ leaderboard, timestamp: now });
     });
 
-    // Public tracker dashboard (one-server one-page landing)
-    this.app.get('/', async (req, res) => {
+    // Mobile-first landing
+    this.app.get('/', (req, res) => {
+      res.redirect(302, '/share-image');
+    });
+
+    // Tracker dashboard
+    this.app.get('/network', async (req, res) => {
       const today = new Date().toDateString();
       const leaderboardPeers = Array.from(this.peers.values())
         .filter((p) => new Date(p.lastSeen).toDateString() === today);
@@ -1218,8 +1254,9 @@ class Tracker {
   <style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px;}h1,h2{margin-bottom:0.25rem}table{border-collapse:collapse;width:100%;max-width:900px;}th,td{border:1px solid #ccc;padding:6px;text-align:left;}a{color:#0366d6;text-decoration:none;}.onboard{display:inline-block;margin:10px 8px 18px 0;padding:10px 14px;border:1px solid #2b6de5;border-radius:999px;background:#eef4ff;color:#0f4dc4;font-weight:600}.shareimg{display:inline-block;margin:10px 0 18px;padding:10px 14px;border:1px solid #b24f2a;border-radius:999px;background:#fff0e8;color:#a03c15;font-weight:600}</style>
 </head>
 <body>
-  <h1>PubWeb Tracker</h1>
+  <h1>PubWeb Network</h1>
   <p>Live peers and page index (one-server / one-page test)</p>
+  <p><a href="/share-image">Mobile image share</a></p>
   <p><a class="onboard" href="/${this.onboardingHash}">Start here: Make your own page (download + publish loop)</a></p>
   <p><a class="shareimg" href="/share-image">Share image from phone</a></p>
 
@@ -1351,7 +1388,7 @@ class Tracker {
     window.__pubwebWrapperVersion = wrapperVersion;
 
     const shareUrl = window.location.origin + '/' + hash;
-    qrImage.src = 'https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=' + encodeURIComponent(shareUrl);
+    qrImage.src = '/qr/' + hash + '.svg?size=260';
     qrToggle.addEventListener('click', () => {
       qrPanel.style.display = qrPanel.style.display === 'block' ? 'none' : 'block';
     });
