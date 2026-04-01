@@ -711,6 +711,7 @@ class Tracker {
     function buildImagePageHtml(title, caption, dataUrl, hashHint) {
       const safeTitle = (title || 'PubWeb Image').replace(/[<>]/g, '');
       const safeCaption = (caption || '').replace(/[<>]/g, '');
+      const captionHtml = safeCaption ? '<div class="cap">' + safeCaption + '</div>' : '';
       return '<!doctype html>' +
         '<html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />' +
         '<title>' + safeTitle + '</title>' +
@@ -718,19 +719,16 @@ class Tracker {
         'body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#171312;color:#f8efe8;}' +
         '.top{position:sticky;top:0;z-index:2;background:#201916d9;backdrop-filter:blur(8px);padding:10px 12px;border-bottom:1px solid #3c302a;}' +
         '.t{font-size:14px;font-weight:700;}.m{font-size:11px;opacity:.78;word-break:break-all;margin-top:2px;}' +
-        '.qr-btn{margin-top:6px;padding:5px 9px;border:1px solid #5b4a42;border-radius:999px;background:#2d2421;color:#f7e8dd;font-size:12px;}' +
-        '.qr{display:none;margin-top:8px;}.qr img{width:142px;height:142px;border-radius:8px;border:1px solid #5b4a42;background:#fff;}' +
         '.pic-wrap{padding:10px;display:flex;justify-content:center;align-items:center;}' +
         'img.main{max-width:100%;max-height:78vh;border-radius:10px;box-shadow:0 8px 26px rgba(0,0,0,.32);}' +
         '.cap{padding:0 12px 14px;color:#d8cbc2;font-size:13px;}' +
         '.cta{padding:0 12px 16px;font-size:12px;opacity:.9;}' +
         '.cta a{color:#ffc7a6;text-decoration:none;}' +
         '</style></head><body>' +
-        '<div class="top"><div class="t">' + safeTitle + '</div><div class="m">Hash: ' + hashHint + '</div><button class="qr-btn" id="qrToggle">Share QR</button><div class="qr" id="qrBlock"><img id="qrImgLocal" alt="QR" /></div></div>' +
+        '<div class="top"><div class="t">' + safeTitle + '</div><div class="m">Hash: ' + hashHint + '</div></div>' +
         '<div class="pic-wrap"><img class="main" src="' + dataUrl + '" alt="Shared image" /></div>' +
-        (safeCaption ? '<div class="cap">' + safeCaption + '</div>' : '') +
+        captionHtml +
         '<div class="cta"><a href="/share-image">Share your own image</a></div>' +
-        '<script>const q=document.getElementById("qrToggle"),b=document.getElementById("qrBlock"),img=document.getElementById("qrImgLocal");const m=(location.pathname||"").match(/[a-f0-9]{64}/i);if(m&&m[0]){img.src="/qr/"+m[0]+".svg?size=220";}q.addEventListener("click",()=>{b.style.display=b.style.display==="block"?"none":"block";});<\/script>' +
         '</body></html>';
     }
 
