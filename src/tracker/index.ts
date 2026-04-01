@@ -1205,9 +1205,13 @@ class Tracker {
       res.json({ leaderboard, timestamp: now });
     });
 
-    // Mobile-first landing
+    // Domain-aware landing behavior
     this.app.get('/', (req, res) => {
-      res.redirect(302, '/share-image');
+      const host = String(req.get('host') || '').toLowerCase().split(':')[0];
+      if (host === 'tracker.pubweb.online' || host.startsWith('tracker.')) {
+        return res.redirect(302, '/network');
+      }
+      return res.redirect(302, '/share-image');
     });
 
     // Tracker dashboard
