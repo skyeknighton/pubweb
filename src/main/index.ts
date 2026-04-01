@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu, ipcMain } from 'electron';
 import path from 'path';
 import { startPeerServer } from '../peer/server';
-import { Database } from '../db';
+import { ContentKind, Database, ShareMode } from '../db';
 
 const DEFAULT_MAX_PAGE_BYTES = 1_474_560;
 
@@ -15,6 +15,24 @@ function getMaxPageBytes(): number {
 let mainWindow: BrowserWindow;
 let peerServer: any;
 let db: Database;
+
+function normalizeShareMode(value: unknown): ShareMode {
+  return value === 'unlisted' || value === 'private-link' || value === 'expires'
+    ? value
+    : 'public';
+}
+
+function normalizeContentKind(value: unknown): ContentKind {
+  return value === 'image-page' ? 'image-page' : 'html';
+}
+
+function normalizeExpiresAt(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : parseInt(String(value || ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+}
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -58,14 +76,53 @@ app.on('ready', async () => {
   createWindow();
 
   // Setup IPC handlers
-  ipcMain.handle('upload-page', async (event, { html, title, tags }) => {
+  ipcMain.handle('upload-page', async (event, payload) => {
+    const {
+      html,
+      title,
+      tags,
+      shareMode: rawShareMode,
+      discoverable: rawDiscoverable,
+      expiresAt: rawExpiresAt,
+      contentKind: rawContentKind,
+      mimeType,
+      mediaWidth,
+      mediaHeight,
+      isEncrypted,
+    } = payload || {};
+
     const maxPageBytes = getMaxPageBytes();
     const htmlBytes = Buffer.byteLength(String(html || ''));
     if (!html || htmlBytes > maxPageBytes) {
       throw new Error(`Page exceeds max size of ${maxPageBytes} bytes`);
     }
 
-    const pageId = await db.addPage({ html, title, tags, author: 'anonymous' });
+    const shareMode = normalizeShareMode(rawShareMode);
+    const expiresAt = normalizeExpiresAt(rawExpiresAt);
+    const discoverable = typeof rawDiscoverable === 'boolean'
+      ? rawDiscoverable
+      : !(shareMode === 'unlisted' || shareMode === 'private-link');
+    const contentKind = normalizeContentKind(rawContentKind);
+    const now = Date.now();
+
+    if (expiresAt && expiresAt <= now) {
+      throw new Error('Expiry must be in the future');
+    }
+
+    const pageId = await db.addPage({
+      html,
+      title: typeof title === 'string' ? title : '',
+      tags: Array.isArray(tags) ? tags : [],
+      author: 'anonymous',
+      shareMode,
+      discoverable,
+      expiresAt,
+      contentKind,
+      mimeType: typeof mimeType === 'string' ? mimeType : undefined,
+      mediaWidth: typeof mediaWidth === 'number' ? mediaWidth : undefined,
+      mediaHeight: typeof mediaHeight === 'number' ? mediaHeight : undefined,
+      isEncrypted: !!isEncrypted,
+    });
     return { success: true, pageId };
   });
 

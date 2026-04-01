@@ -1,7 +1,7 @@
 import express, { Express } from 'express';
 import crypto from 'crypto';
 import { Server } from 'http';
-import { Database } from '../db';
+import { ContentKind, Database, ShareMode } from '../db';
 
 const NatAPI = require('nat-api');
 
@@ -42,6 +42,33 @@ interface AnnouncePageSummary {
   signerPeerId: string;
   signature: string;
   signerPublicKey: string;
+  shareMode: ShareMode;
+  discoverable: boolean;
+  expiresAt?: number;
+  contentKind: ContentKind;
+  mimeType?: string;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  isEncrypted: boolean;
+}
+
+function normalizeShareMode(value: unknown): ShareMode {
+  if (value === 'unlisted' || value === 'private-link' || value === 'expires') {
+    return value;
+  }
+  return 'public';
+}
+
+function normalizeContentKind(value: unknown): ContentKind {
+  return value === 'image-page' ? 'image-page' : 'html';
+}
+
+function normalizeExpiresAt(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : parseInt(String(value || ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
 }
 
 function pickRandomHighPort(): number {
@@ -312,6 +339,14 @@ class PeerServer {
           signerPeerId: summary.signerPeerId || this.peerId,
           signature: summary.signature || '',
           signerPublicKey: summary.signerPublicKey || this.signerPublicKey,
+          shareMode: summary.shareMode,
+          discoverable: summary.discoverable,
+          expiresAt: summary.expiresAt,
+          contentKind: summary.contentKind,
+          mimeType: summary.mimeType,
+          mediaWidth: summary.mediaWidth,
+          mediaHeight: summary.mediaHeight,
+          isEncrypted: summary.isEncrypted,
         }));
       const reachability = this.inferReachability();
       console.log(`Announcing ${pages.length} pages to tracker at ${TRACKER_URL}`);
@@ -373,6 +408,10 @@ class PeerServer {
         return res.status(404).json({ error: 'Page not found' });
       }
 
+      if (page.expiresAt && page.expiresAt <= Date.now()) {
+        return res.status(410).json({ error: 'Page expired', expiresAt: page.expiresAt });
+      }
+
       res.set('Content-Type', 'text/html; charset=utf-8');
       res.set('cache-control', 'no-store');
       res.send(page.html);
@@ -383,7 +422,19 @@ class PeerServer {
 
     // Publish a page
     this.app.post('/publish', async (req, res) => {
-      const { html, title, tags } = req.body;
+      const {
+        html,
+        title,
+        tags,
+        shareMode: rawShareMode,
+        discoverable: rawDiscoverable,
+        expiresAt: rawExpiresAt,
+        contentKind: rawContentKind,
+        mimeType,
+        mediaWidth,
+        mediaHeight,
+        isEncrypted,
+      } = req.body || {};
       const rateKey = `publish:${this.getClientIp(req)}`;
       if (!this.checkRateLimit(rateKey, 30, 60_000)) {
         return res.status(429).json({ error: 'Rate limit exceeded' });
@@ -407,6 +458,17 @@ class PeerServer {
       const providedTitle = typeof title === 'string' ? title.trim() : '';
       const finalTitle = (providedTitle || inferredTitle).replace(/\s+/g, ' ').trim().slice(0, 160);
       const created = Date.now();
+      const shareMode = normalizeShareMode(rawShareMode);
+      const expiresAt = normalizeExpiresAt(rawExpiresAt);
+      const discoverable = typeof rawDiscoverable === 'boolean'
+        ? rawDiscoverable
+        : !(shareMode === 'unlisted' || shareMode === 'private-link');
+      const contentKind = normalizeContentKind(rawContentKind);
+
+      if (expiresAt && expiresAt <= created) {
+        return res.status(400).json({ error: 'Expiry must be in the future' });
+      }
+
       const signedManifest = this.createSignedPageManifest(hash, finalTitle, created);
       const existingPage = await this.db.getPageByHash(hash);
 
@@ -419,6 +481,14 @@ class PeerServer {
         signature: signedManifest.signature,
         signerPublicKey: signedManifest.signerPublicKey,
         created,
+        shareMode,
+        discoverable,
+        expiresAt,
+        contentKind,
+        mimeType: typeof mimeType === 'string' ? mimeType : undefined,
+        mediaWidth: typeof mediaWidth === 'number' ? mediaWidth : undefined,
+        mediaHeight: typeof mediaHeight === 'number' ? mediaHeight : undefined,
+        isEncrypted: !!isEncrypted,
       });
 
       const shouldRefreshExistingTitle = !existingPage || this.isPlaceholderTitle(existingPage.title);
@@ -439,6 +509,11 @@ class PeerServer {
         maxPageBytes: this.maxPageBytes,
         signerPeerId: signedManifest.signerPeerId,
         signature: signedManifest.signature,
+        shareMode,
+        discoverable,
+        expiresAt,
+        contentKind,
+        isEncrypted: !!isEncrypted,
       });
     });
 
@@ -465,6 +540,14 @@ class PeerServer {
         signerPeerId: page.signerPeerId,
         signature: page.signature,
         signerPublicKey: page.signerPublicKey,
+        shareMode: page.shareMode,
+        discoverable: page.discoverable,
+        expiresAt: page.expiresAt,
+        contentKind: page.contentKind,
+        mimeType: page.mimeType,
+        mediaWidth: page.mediaWidth,
+        mediaHeight: page.mediaHeight,
+        isEncrypted: page.isEncrypted,
       });
     });
 

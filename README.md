@@ -340,11 +340,21 @@ POST /discover                # Peer discovery
 ### Tracker Server (`:4000`)
 ```
 POST /announce                # Register peer
+GET  /share-image             # Mobile image uploader UI
+POST /v1/publish              # Tracker publish proxy to active peers
 GET  /query/:hash             # Find peers with page
 GET  /leaderboard             # Daily top uploaders
 GET  /peers                   # Active peers list
 GET  /health                  # Tracker health
 ```
+
+## Phone Image Sharing (pubweb.online)
+
+- Open `https://pubweb.online/share-image` on your phone.
+- Pick an image, choose mode, then publish.
+- The tracker forwards publish requests to an active managed peer.
+- On success you get a share URL and QR code.
+- Published wrapper pages now include a `Share QR` toggle in the top header.
 
 ## Stats in Electron UI
 

@@ -25,6 +25,9 @@ interface TrackerEntry {
   endpoints?: PeerEndpoint[];
   pages: string[];
   pageTitles: Record<string, string>;
+  pageModes: Record<string, 'public' | 'unlisted' | 'private-link' | 'expires'>;
+  pageDiscoverable: Record<string, boolean>;
+  pageExpiresAt: Record<string, number | undefined>;
   bytesUploaded: number;
   bytesDownloaded: number;
   lastSeen: number;
@@ -170,6 +173,47 @@ class Tracker {
     return normalized.slice(0, 160);
   }
 
+  private normalizeShareMode(value: unknown): 'public' | 'unlisted' | 'private-link' | 'expires' {
+    return value === 'unlisted' || value === 'private-link' || value === 'expires' ? value : 'public';
+  }
+
+  private normalizeExpiresAt(value: unknown): number | undefined {
+    const parsed = typeof value === 'number' ? value : parseInt(String(value || ''), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return undefined;
+    }
+    return parsed;
+  }
+
+  private isExpired(peer: TrackerEntry, hash: string, now: number = Date.now()): boolean {
+    const expiresAt = peer.pageExpiresAt[hash];
+    return typeof expiresAt === 'number' && expiresAt > 0 && expiresAt <= now;
+  }
+
+  private isDiscoverable(peer: TrackerEntry, hash: string, now: number = Date.now()): boolean {
+    if (this.isExpired(peer, hash, now)) {
+      return false;
+    }
+
+    if (peer.pageDiscoverable[hash] === false) {
+      return false;
+    }
+
+    const mode = peer.pageModes[hash] || 'public';
+    return mode !== 'private-link' && mode !== 'unlisted';
+  }
+
+  private getFirstModeForHash(hash: string): 'public' | 'unlisted' | 'private-link' | 'expires' {
+    const peers = this.getActivePeersForHash(hash, 120_000);
+    for (const peer of peers) {
+      const mode = peer.pageModes[hash];
+      if (mode) {
+        return mode;
+      }
+    }
+    return 'public';
+  }
+
   private extractObservedIp(req: Request): string | undefined {
     const forwarded = req.headers['x-forwarded-for'];
     const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
@@ -277,6 +321,7 @@ class Tracker {
 
   private getResolveCandidates(hash: string): TrackerEntry[] {
     const candidates = this.getActivePeersForHash(hash, 60_000)
+      .filter((peer) => !this.isExpired(peer, hash))
       .sort((a, b) => {
         const aReachable = a.reachable ? 1 : 0;
         const bReachable = b.reachable ? 1 : 0;
@@ -336,6 +381,50 @@ class Tracker {
     return `http://${this.getFetchHost(peer)}:${peer.port}/page/${hash}`;
   }
 
+  private buildPeerPublishUrl(peer: TrackerEntry): string {
+    const publicEndpoint = (peer.endpoints || []).find((endpoint) => endpoint.kind === 'public' && endpoint.reachable);
+    if (publicEndpoint) {
+      const normalized = this.normalizePublicBaseUrl(publicEndpoint.url);
+      if (normalized) {
+        return `${normalized}/publish`;
+      }
+    }
+
+    if (peer.publicBaseUrl) {
+      const normalized = this.normalizePublicBaseUrl(peer.publicBaseUrl);
+      if (normalized) {
+        return `${normalized}/publish`;
+      }
+    }
+
+    if (this.isPrivateOrLoopbackHost(this.getFetchHost(peer))) {
+      return '';
+    }
+
+    return `http://${this.getFetchHost(peer)}:${peer.port}/publish`;
+  }
+
+  private getPublishCandidates(maxAgeMs: number = 90_000): TrackerEntry[] {
+    const cutoff = Date.now() - maxAgeMs;
+    return Array.from(this.peers.values())
+      .filter((peer) => peer.lastSeen >= cutoff)
+      .sort((a, b) => {
+        const aReach = a.reachable ? 1 : 0;
+        const bReach = b.reachable ? 1 : 0;
+        if (bReach !== aReach) {
+          return bReach - aReach;
+        }
+
+        const aPublic = this.buildPeerPublishUrl(a) ? 1 : 0;
+        const bPublic = this.buildPeerPublishUrl(b) ? 1 : 0;
+        if (bPublic !== aPublic) {
+          return bPublic - aPublic;
+        }
+
+        return b.lastSeen - a.lastSeen;
+      });
+  }
+
   private async resolvePage(hash: string): Promise<
     | { status: 'ready'; html: string; contentType: string; target: string; peerId: string }
     | { status: 'warming'; reason: string }
@@ -344,6 +433,13 @@ class Tracker {
     const candidates = this.getResolveCandidates(hash);
     if (candidates.length === 0) {
       const known = this.pageIndex.has(hash);
+      if (known) {
+        const activePeers = this.getActivePeersForHash(hash, 120_000);
+        const hasOnlyExpired = activePeers.length > 0 && activePeers.every((peer) => this.isExpired(peer, hash));
+        if (hasOnlyExpired) {
+          return { status: 'missing', reason: 'Page expired on official network.' };
+        }
+      }
       return known
         ? { status: 'warming', reason: 'Page hash exists, waiting for an active peer.' }
         : { status: 'missing', reason: 'Page hash is not currently indexed by tracker.' };
@@ -383,7 +479,350 @@ class Tracker {
       res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=()');
       next();
     });
-    this.app.use(express.json());
+    this.app.use(express.json({ limit: '2mb' }));
+
+    this.app.get('/share-image', (req, res) => {
+      const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PubWeb Share Image</title>
+  <style>
+    :root {
+      --bg: #f8f7f3;
+      --card: #fffdf7;
+      --ink: #1f1a17;
+      --muted: #6e655d;
+      --accent: #a33f2f;
+      --accent-soft: #f4ddd7;
+      --line: #e7dcd3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background: radial-gradient(1200px 400px at 50% -10%, #fff4e8, var(--bg));
+      min-height: 100vh;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 20px 14px 36px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 8px 30px rgba(64, 36, 18, 0.06);
+    }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .sub { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 10px; }
+    label { font-size: 13px; font-weight: 600; }
+    input, select, textarea, button {
+      width: 100%;
+      font: inherit;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    textarea { min-height: 68px; resize: vertical; }
+    .inline { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .small { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+    .btn {
+      border: 0;
+      background: linear-gradient(120deg, #b24837, var(--accent));
+      color: #fff;
+      font-weight: 700;
+      margin-top: 8px;
+    }
+    .preview { margin-top: 12px; display: none; }
+    .preview img { width: 100%; border-radius: 10px; border: 1px solid var(--line); }
+    .status { margin-top: 10px; font-size: 13px; color: var(--muted); }
+    .success { margin-top: 14px; padding: 12px; border-radius: 12px; border: 1px solid #cae6c9; background: #f1fff0; display: none; }
+    .success a { word-break: break-all; }
+    .qr { margin-top: 10px; text-align: center; }
+    .qr img { width: 180px; height: 180px; border: 1px solid var(--line); border-radius: 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Share image</h1>
+      <p class="sub">Phone friendly uploader. Low-res by default on purpose.</p>
+
+      <div class="row">
+        <label for="fileInput">Image</label>
+        <input id="fileInput" type="file" accept="image/*" />
+      </div>
+
+      <div class="inline">
+        <div class="row">
+          <label for="titleInput">Title</label>
+          <input id="titleInput" type="text" maxlength="120" placeholder="Evening walk" />
+        </div>
+        <div class="row">
+          <label for="modeInput">Mode</label>
+          <select id="modeInput">
+            <option value="public">Public</option>
+            <option value="unlisted">Unlisted</option>
+            <option value="private-link">Private Link</option>
+            <option value="expires">Expires</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <label for="captionInput">Caption (optional)</label>
+        <textarea id="captionInput" maxlength="240" placeholder="Tiny pictures, big vibes."></textarea>
+      </div>
+
+      <div class="inline">
+        <div class="row">
+          <label for="qualityInput">Preset</label>
+          <select id="qualityInput">
+            <option value="tiny">Tiny</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="clear">Clear</option>
+          </select>
+          <p class="small">Balanced default aims for phone-friendly size.</p>
+        </div>
+        <div class="row" id="expiresWrap" style="display:none;">
+          <label for="expiresInput">Expires</label>
+          <input id="expiresInput" type="datetime-local" />
+        </div>
+      </div>
+
+      <button class="btn" id="publishBtn" type="button">Publish image</button>
+      <p class="status" id="status">Select an image to begin.</p>
+
+      <div class="preview" id="previewWrap">
+        <img id="previewImg" alt="Preview" />
+      </div>
+
+      <div class="success" id="successBox">
+        <strong>Published.</strong>
+        <div style="margin-top:8px;"><a id="shareLink" href="#" target="_blank" rel="noopener noreferrer"></a></div>
+        <div class="qr"><img id="qrImg" alt="Share QR code" /></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const titleInput = document.getElementById('titleInput');
+    const modeInput = document.getElementById('modeInput');
+    const captionInput = document.getElementById('captionInput');
+    const qualityInput = document.getElementById('qualityInput');
+    const expiresWrap = document.getElementById('expiresWrap');
+    const expiresInput = document.getElementById('expiresInput');
+    const publishBtn = document.getElementById('publishBtn');
+    const statusEl = document.getElementById('status');
+    const previewWrap = document.getElementById('previewWrap');
+    const previewImg = document.getElementById('previewImg');
+    const successBox = document.getElementById('successBox');
+    const shareLink = document.getElementById('shareLink');
+    const qrImg = document.getElementById('qrImg');
+
+    modeInput.addEventListener('change', () => {
+      expiresWrap.style.display = modeInput.value === 'expires' ? 'block' : 'none';
+    });
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        previewWrap.style.display = 'none';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        previewImg.src = String(reader.result || '');
+        previewWrap.style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+    });
+
+    function presetConfig(preset) {
+      if (preset === 'tiny') {
+        return { maxDim: 900, quality: 0.46 };
+      }
+      if (preset === 'clear') {
+        return { maxDim: 1400, quality: 0.7 };
+      }
+      return { maxDim: 1200, quality: 0.58 };
+    }
+
+    async function fileToCompressedDataUrl(file, preset) {
+      const cfg = presetConfig(preset);
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, cfg.maxDim / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, width, height);
+
+      let quality = cfg.quality;
+      let out = canvas.toDataURL('image/jpeg', quality);
+      let bytes = Math.floor((out.length * 3) / 4);
+      while (bytes > 230000 && quality > 0.34) {
+        quality -= 0.05;
+        out = canvas.toDataURL('image/jpeg', quality);
+        bytes = Math.floor((out.length * 3) / 4);
+      }
+
+      return { dataUrl: out, width, height, bytes, mimeType: 'image/jpeg' };
+    }
+
+    function buildImagePageHtml(title, caption, dataUrl, hashHint) {
+      const safeTitle = (title || 'PubWeb Image').replace(/[<>]/g, '');
+      const safeCaption = (caption || '').replace(/[<>]/g, '');
+      return '<!doctype html>' +
+        '<html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />' +
+        '<title>' + safeTitle + '</title>' +
+        '<style>' +
+        'body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#171312;color:#f8efe8;}' +
+        '.top{position:sticky;top:0;z-index:2;background:#201916d9;backdrop-filter:blur(8px);padding:10px 12px;border-bottom:1px solid #3c302a;}' +
+        '.t{font-size:14px;font-weight:700;}.m{font-size:11px;opacity:.78;word-break:break-all;margin-top:2px;}' +
+        '.qr-btn{margin-top:6px;padding:5px 9px;border:1px solid #5b4a42;border-radius:999px;background:#2d2421;color:#f7e8dd;font-size:12px;}' +
+        '.qr{display:none;margin-top:8px;}.qr img{width:142px;height:142px;border-radius:8px;border:1px solid #5b4a42;background:#fff;}' +
+        '.pic-wrap{padding:10px;display:flex;justify-content:center;align-items:center;}' +
+        'img.main{max-width:100%;max-height:78vh;border-radius:10px;box-shadow:0 8px 26px rgba(0,0,0,.32);}' +
+        '.cap{padding:0 12px 14px;color:#d8cbc2;font-size:13px;}' +
+        '.cta{padding:0 12px 16px;font-size:12px;opacity:.9;}' +
+        '.cta a{color:#ffc7a6;text-decoration:none;}' +
+        '</style></head><body>' +
+        '<div class="top"><div class="t">' + safeTitle + '</div><div class="m">Hash: ' + hashHint + '</div><button class="qr-btn" id="qrToggle">Share QR</button><div class="qr" id="qrBlock"><img id="qrImgLocal" alt="QR" /></div></div>' +
+        '<div class="pic-wrap"><img class="main" src="' + dataUrl + '" alt="Shared image" /></div>' +
+        (safeCaption ? '<div class="cap">' + safeCaption + '</div>' : '') +
+        '<div class="cta"><a href="/share-image">Share your own image</a></div>' +
+        '<script>const q=document.getElementById("qrToggle"),b=document.getElementById("qrBlock"),img=document.getElementById("qrImgLocal");const share=location.href;img.src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data="+encodeURIComponent(share);q.addEventListener("click",()=>{b.style.display=b.style.display==="block"?"none":"block";});<\/script>' +
+        '</body></html>';
+    }
+
+    async function publish() {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        statusEl.textContent = 'Choose an image first.';
+        return;
+      }
+
+      publishBtn.disabled = true;
+      statusEl.textContent = 'Compressing image...';
+      successBox.style.display = 'none';
+
+      try {
+        const mode = modeInput.value;
+        const compressed = await fileToCompressedDataUrl(file, qualityInput.value);
+        const hint = 'pending';
+        const html = buildImagePageHtml(titleInput.value.trim(), captionInput.value.trim(), compressed.dataUrl, hint);
+        const payload = {
+          html,
+          title: titleInput.value.trim() || 'Shared image',
+          tags: ['image', 'mobile'],
+          shareMode: mode,
+          contentKind: 'image-page',
+          mimeType: compressed.mimeType,
+          mediaWidth: compressed.width,
+          mediaHeight: compressed.height,
+          discoverable: mode === 'public',
+          isEncrypted: mode === 'private-link' || mode === 'expires',
+          expiresAt: mode === 'expires' && expiresInput.value ? new Date(expiresInput.value).getTime() : undefined,
+        };
+
+        statusEl.textContent = 'Publishing to PubWeb...';
+        const response = await fetch('/v1/publish', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.hash) {
+          throw new Error(result.error || ('Publish failed (' + response.status + ')'));
+        }
+
+        const finalUrl = location.origin + '/' + result.hash;
+        shareLink.href = finalUrl;
+        shareLink.textContent = finalUrl;
+        qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=' + encodeURIComponent(finalUrl);
+        successBox.style.display = 'block';
+        statusEl.textContent = 'Published. Share the link or scan the QR.';
+      } catch (err) {
+        statusEl.textContent = String(err && err.message ? err.message : err);
+      } finally {
+        publishBtn.disabled = false;
+      }
+    }
+
+    publishBtn.addEventListener('click', publish);
+  </script>
+</body>
+</html>`;
+
+      res.status(200)
+        .set('content-type', 'text/html; charset=utf-8')
+        .set('cache-control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0')
+        .send(html);
+    });
+
+    this.app.post('/v1/publish', async (req, res) => {
+      const rateKey = `publish-proxy:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 20, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+
+      const { html } = req.body || {};
+      if (typeof html !== 'string' || !html.trim()) {
+        return res.status(400).json({ error: 'Missing HTML' });
+      }
+
+      const candidates = this.getPublishCandidates();
+      if (candidates.length === 0) {
+        return res.status(503).json({ error: 'No active publish peers available' });
+      }
+
+      let lastError = 'No publish peer accepted request';
+      for (const peer of candidates) {
+        const target = this.buildPeerPublishUrl(peer);
+        if (!target) {
+          continue;
+        }
+
+        try {
+          const upstream = await fetch(target, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(req.body || {}),
+          });
+
+          const payload = await upstream.json().catch(() => ({})) as Record<string, unknown>;
+          if (!upstream.ok) {
+            const errorMessage = typeof payload.error === 'string' ? payload.error : '';
+            lastError = errorMessage || `Peer publish failed (${upstream.status})`;
+            continue;
+          }
+
+          const hash = typeof payload.hash === 'string' ? payload.hash : '';
+          if (!Tracker.isValidHash(hash)) {
+            lastError = 'Peer returned invalid hash';
+            continue;
+          }
+
+          return res.json({
+            ...payload,
+            shareUrl: `${req.protocol}://${req.get('host')}/${hash}`,
+          });
+        } catch (err) {
+          lastError = String(err || lastError);
+        }
+      }
+
+      return res.status(502).json({ error: lastError });
+    });
 
     this.app.post('/v1/peer/heartbeat', async (req, res) => {
       const rateKey = `heartbeat:${this.getClientIp(req)}`;
@@ -468,6 +907,9 @@ class Tracker {
       const observedIp = this.extractObservedIp(req);
       const summaryList = Array.isArray(pageSummaries) ? pageSummaries : [];
       const pageTitles: Record<string, string> = {};
+        const pageModes: Record<string, 'public' | 'unlisted' | 'private-link' | 'expires'> = {};
+        const pageDiscoverable: Record<string, boolean> = {};
+        const pageExpiresAt: Record<string, number | undefined> = {};
       const acceptedSummaryHashes = new Set<string>();
       for (const summary of summaryList) {
         if (!summary || typeof summary !== 'object') {
@@ -511,6 +953,11 @@ class Tracker {
         }
 
         pageTitles[hash] = title;
+        pageModes[hash] = this.normalizeShareMode(summary.shareMode);
+        pageDiscoverable[hash] = typeof summary.discoverable === 'boolean'
+          ? summary.discoverable
+          : !(pageModes[hash] === 'unlisted' || pageModes[hash] === 'private-link');
+        pageExpiresAt[hash] = this.normalizeExpiresAt(summary.expiresAt);
         acceptedSummaryHashes.add(hash);
       }
 
@@ -546,6 +993,9 @@ class Tracker {
           : [],
         pages: filteredPages,
         pageTitles,
+        pageModes,
+        pageDiscoverable,
+        pageExpiresAt,
         bytesUploaded: Math.max(0, Number(bytesUploaded) || 0),
         bytesDownloaded: Math.max(0, Number(bytesDownloaded) || 0),
         lastSeen: Date.now(),
@@ -589,21 +1039,27 @@ class Tracker {
             return null;
           }
 
-          const title = activePeers
+          const discoverablePeers = activePeers.filter((peer) => this.isDiscoverable(peer, hash));
+          if (discoverablePeers.length === 0) {
+            return null;
+          }
+
+          const title = discoverablePeers
             .map((peer) => peer.pageTitles?.[hash])
             .find((value): value is string => !!value) || `Untitled ${hash.slice(0, 12)}`;
 
-          const latestSeen = activePeers.reduce((maxSeen, peer) => Math.max(maxSeen, peer.lastSeen), 0);
+          const latestSeen = discoverablePeers.reduce((maxSeen, peer) => Math.max(maxSeen, peer.lastSeen), 0);
           return {
             hash,
             title,
-            copies: activePeers.length,
+            copies: discoverablePeers.length,
             pageVisits: siteStats.get(hash)?.pageVisits || 0,
             latestSeen,
             url: `/${hash}`,
+            mode: this.getFirstModeForHash(hash),
           };
         })
-        .filter((item): item is { hash: string; title: string; copies: number; pageVisits: number; latestSeen: number; url: string } => !!item)
+        .filter((item): item is { hash: string; title: string; copies: number; pageVisits: number; latestSeen: number; url: string; mode: 'public' | 'unlisted' | 'private-link' | 'expires' } => !!item)
         .filter((item) => {
           if (!q) {
             return true;
@@ -742,9 +1198,10 @@ class Tracker {
             title,
             copies: peers.length,
             pageVisits: siteStats.get(hash)?.pageVisits || 0,
+            mode: this.getFirstModeForHash(hash),
           };
         })
-        .filter((page) => page.copies > 0)
+          .filter((page) => page.copies > 0 && page.mode !== 'private-link' && page.mode !== 'unlisted')
         .sort((a, b) => {
           if (b.pageVisits !== a.pageVisits) {
             return b.pageVisits - a.pageVisits;
@@ -758,12 +1215,13 @@ class Tracker {
 <head>
   <meta charset="utf-8" />
   <title>PubWeb Tracker</title>
-  <style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px;}h1,h2{margin-bottom:0.25rem}table{border-collapse:collapse;width:100%;max-width:900px;}th,td{border:1px solid #ccc;padding:6px;text-align:left;}a{color:#0366d6;text-decoration:none;}.onboard{display:inline-block;margin:10px 0 18px;padding:10px 14px;border:1px solid #2b6de5;border-radius:999px;background:#eef4ff;color:#0f4dc4;font-weight:600}</style>
+  <style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px;}h1,h2{margin-bottom:0.25rem}table{border-collapse:collapse;width:100%;max-width:900px;}th,td{border:1px solid #ccc;padding:6px;text-align:left;}a{color:#0366d6;text-decoration:none;}.onboard{display:inline-block;margin:10px 8px 18px 0;padding:10px 14px;border:1px solid #2b6de5;border-radius:999px;background:#eef4ff;color:#0f4dc4;font-weight:600}.shareimg{display:inline-block;margin:10px 0 18px;padding:10px 14px;border:1px solid #b24f2a;border-radius:999px;background:#fff0e8;color:#a03c15;font-weight:600}</style>
 </head>
 <body>
   <h1>PubWeb Tracker</h1>
   <p>Live peers and page index (one-server / one-page test)</p>
   <p><a class="onboard" href="/${this.onboardingHash}">Start here: Make your own page (download + publish loop)</a></p>
+  <p><a class="shareimg" href="/share-image">Share image from phone</a></p>
 
   <h2>Top peers (by upload bytes today)</h2>
   <table>
@@ -850,6 +1308,10 @@ class Tracker {
     .top { padding: 14px 16px; border-bottom: 1px solid #1f2a44; background: #111a2f; }
     .title { font-size: 14px; opacity: .9; }
     .meta { font-size: 12px; opacity: .75; margin-top: 4px; word-break: break-all; }
+    .top-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .qr-btn { border: 1px solid #34466f; border-radius: 999px; background: #182646; color: #dbe7ff; padding: 6px 10px; font-size: 12px; }
+    .qr-panel { display: none; margin-top: 10px; }
+    .qr-panel img { width: 170px; height: 170px; border-radius: 8px; border: 1px solid #314971; background: white; }
     .status { padding: 16px; font-size: 14px; }
     .frame-wrap { flex: 1 1 auto; min-height: 0; display: none; }
     iframe { width: 100%; height: 100%; min-height: 0; border: 0; background: white; }
@@ -860,9 +1322,17 @@ class Tracker {
 <body>
   <div class="shell">
     <div class="top">
-      <div class="title">PubWeb wrapper</div>
-      <div class="meta">Hash: ${hash}</div>
-      <div class="meta">Wrapper version: ${this.escapeHtml(this.wrapperVersion)}</div>
+      <div class="top-row">
+        <div>
+          <div class="title">PubWeb wrapper</div>
+          <div class="meta">Hash: ${hash}</div>
+          <div class="meta">Wrapper version: ${this.escapeHtml(this.wrapperVersion)}</div>
+        </div>
+        <button class="qr-btn" id="qrToggle" type="button">Share QR</button>
+      </div>
+      <div class="qr-panel" id="qrPanel">
+        <img id="qrImage" alt="Shareable QR" />
+      </div>
     </div>
     <div class="status" id="statusText">Locating content across the network<span class="dot"></span></div>
     <div class="frame-wrap" id="frameWrap">
@@ -875,7 +1345,16 @@ class Tracker {
     const statusText = document.getElementById('statusText');
     const frameWrap = document.getElementById('frameWrap');
     const frame = document.getElementById('siteFrame');
+    const qrToggle = document.getElementById('qrToggle');
+    const qrPanel = document.getElementById('qrPanel');
+    const qrImage = document.getElementById('qrImage');
     window.__pubwebWrapperVersion = wrapperVersion;
+
+    const shareUrl = window.location.origin + '/' + hash;
+    qrImage.src = 'https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=' + encodeURIComponent(shareUrl);
+    qrToggle.addEventListener('click', () => {
+      qrPanel.style.display = qrPanel.style.display === 'block' ? 'none' : 'block';
+    });
 
     function installExternalLinkEscape() {
       let frameDoc;

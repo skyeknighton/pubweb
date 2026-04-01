@@ -14,6 +14,14 @@ export interface Page {
   signerPeerId?: string;
   signature?: string;
   signerPublicKey?: string;
+  shareMode: ShareMode;
+  discoverable: boolean;
+  expiresAt?: number;
+  contentKind: ContentKind;
+  mimeType?: string;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  isEncrypted: boolean;
 }
 
 export interface Stats {
@@ -29,6 +37,47 @@ export interface PageSummary {
   signerPeerId?: string;
   signature?: string;
   signerPublicKey?: string;
+  shareMode: ShareMode;
+  discoverable: boolean;
+  expiresAt?: number;
+  contentKind: ContentKind;
+  mimeType?: string;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  isEncrypted: boolean;
+}
+
+export type ShareMode = 'public' | 'unlisted' | 'private-link' | 'expires';
+export type ContentKind = 'html' | 'image-page';
+
+const DEFAULT_SHARE_MODE: ShareMode = 'public';
+const DEFAULT_CONTENT_KIND: ContentKind = 'html';
+
+function parseShareMode(value: unknown): ShareMode {
+  if (value === 'public' || value === 'unlisted' || value === 'private-link' || value === 'expires') {
+    return value;
+  }
+  return DEFAULT_SHARE_MODE;
+}
+
+function parseContentKind(value: unknown): ContentKind {
+  if (value === 'html' || value === 'image-page') {
+    return value;
+  }
+  return DEFAULT_CONTENT_KIND;
+}
+
+function parseNullableNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = parseInt(value, 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
 }
 
 export class Database {
@@ -96,6 +145,14 @@ export class Database {
       await this.ensureColumn('pages', 'signer_peer_id', 'TEXT');
       await this.ensureColumn('pages', 'signature', 'TEXT');
       await this.ensureColumn('pages', 'signer_public_key', 'TEXT');
+      await this.ensureColumn('pages', 'share_mode', `TEXT NOT NULL DEFAULT '${DEFAULT_SHARE_MODE}'`);
+      await this.ensureColumn('pages', 'discoverable', 'INTEGER NOT NULL DEFAULT 1');
+      await this.ensureColumn('pages', 'expires_at', 'INTEGER');
+      await this.ensureColumn('pages', 'content_kind', `TEXT NOT NULL DEFAULT '${DEFAULT_CONTENT_KIND}'`);
+      await this.ensureColumn('pages', 'mime_type', 'TEXT');
+      await this.ensureColumn('pages', 'media_width', 'INTEGER');
+      await this.ensureColumn('pages', 'media_height', 'INTEGER');
+      await this.ensureColumn('pages', 'is_encrypted', 'INTEGER NOT NULL DEFAULT 0');
     });
   }
 
@@ -108,6 +165,14 @@ export class Database {
     signature?: string;
     signerPublicKey?: string;
     created?: number;
+    shareMode?: ShareMode;
+    discoverable?: boolean;
+    expiresAt?: number;
+    contentKind?: ContentKind;
+    mimeType?: string;
+    mediaWidth?: number;
+    mediaHeight?: number;
+    isEncrypted?: boolean;
   }): Promise<string> {
     const id = crypto.randomUUID();
     const hash = crypto.createHash('sha256').update(data.html).digest('hex');
@@ -116,8 +181,8 @@ export class Database {
 
     return new Promise((resolve, reject) => {
       this.db.run(
-        `INSERT INTO pages (id, hash, html, title, author, tags, created, signer_peer_id, signature, signer_public_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pages (id, hash, html, title, author, tags, created, signer_peer_id, signature, signer_public_key, share_mode, discoverable, expires_at, content_kind, mime_type, media_width, media_height, is_encrypted)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           hash,
@@ -129,6 +194,14 @@ export class Database {
           data.signerPeerId || null,
           data.signature || null,
           data.signerPublicKey || null,
+          parseShareMode(data.shareMode),
+          data.discoverable === false ? 0 : 1,
+          parseNullableNumber(data.expiresAt) || null,
+          parseContentKind(data.contentKind),
+          typeof data.mimeType === 'string' ? data.mimeType.slice(0, 120) : null,
+          parseNullableNumber(data.mediaWidth) || null,
+          parseNullableNumber(data.mediaHeight) || null,
+          data.isEncrypted ? 1 : 0,
         ],
         (err) => {
           if (err) {
@@ -150,9 +223,30 @@ export class Database {
                       `UPDATE pages
                        SET signer_peer_id = COALESCE(signer_peer_id, ?),
                            signature = COALESCE(signature, ?),
-                           signer_public_key = COALESCE(signer_public_key, ?)
+                           signer_public_key = COALESCE(signer_public_key, ?),
+                           share_mode = COALESCE(share_mode, ?),
+                           discoverable = COALESCE(discoverable, ?),
+                           expires_at = COALESCE(expires_at, ?),
+                           content_kind = COALESCE(content_kind, ?),
+                           mime_type = COALESCE(mime_type, ?),
+                           media_width = COALESCE(media_width, ?),
+                           media_height = COALESCE(media_height, ?),
+                           is_encrypted = COALESCE(is_encrypted, ?)
                        WHERE hash = ?`,
-                      [data.signerPeerId, data.signature, data.signerPublicKey, hash],
+                      [
+                        data.signerPeerId,
+                        data.signature,
+                        data.signerPublicKey,
+                        parseShareMode(data.shareMode),
+                        data.discoverable === false ? 0 : 1,
+                        parseNullableNumber(data.expiresAt) || null,
+                        parseContentKind(data.contentKind),
+                        typeof data.mimeType === 'string' ? data.mimeType.slice(0, 120) : null,
+                        parseNullableNumber(data.mediaWidth) || null,
+                        parseNullableNumber(data.mediaHeight) || null,
+                        data.isEncrypted ? 1 : 0,
+                        hash,
+                      ],
                       () => resolve(row.id)
                     );
                     return;
@@ -201,6 +295,14 @@ export class Database {
               signerPeerId: row.signer_peer_id || undefined,
               signature: row.signature || undefined,
               signerPublicKey: row.signer_public_key || undefined,
+              shareMode: parseShareMode(row.share_mode),
+              discoverable: !!row.discoverable,
+              expiresAt: parseNullableNumber(row.expires_at),
+              contentKind: parseContentKind(row.content_kind),
+              mimeType: row.mime_type || undefined,
+              mediaWidth: parseNullableNumber(row.media_width),
+              mediaHeight: parseNullableNumber(row.media_height),
+              isEncrypted: !!row.is_encrypted,
             });
           } else {
             resolve(null);
@@ -232,6 +334,14 @@ export class Database {
                 signerPeerId: r.signer_peer_id || undefined,
                 signature: r.signature || undefined,
                 signerPublicKey: r.signer_public_key || undefined,
+                shareMode: parseShareMode(r.share_mode),
+                discoverable: !!r.discoverable,
+                expiresAt: parseNullableNumber(r.expires_at),
+                contentKind: parseContentKind(r.content_kind),
+                mimeType: r.mime_type || undefined,
+                mediaWidth: parseNullableNumber(r.media_width),
+                mediaHeight: parseNullableNumber(r.media_height),
+                isEncrypted: !!r.is_encrypted,
               }))
             );
           }
@@ -256,9 +366,13 @@ export class Database {
   async getPageSummaries(limit: number = 500): Promise<PageSummary[]> {
     return new Promise((resolve, reject) => {
       this.db.all(
-        'SELECT hash, title, created, signer_peer_id, signature, signer_public_key FROM pages ORDER BY created DESC LIMIT ?',
+        `SELECT hash, title, created, signer_peer_id, signature, signer_public_key,
+                share_mode, discoverable, expires_at, content_kind, mime_type, media_width, media_height, is_encrypted
+         FROM pages
+         ORDER BY created DESC
+         LIMIT ?`,
         [limit],
-        (err, rows: Array<{ hash: string; title: string | null; created: number; signer_peer_id: string | null; signature: string | null; signer_public_key: string | null }>) => {
+        (err, rows: Array<{ hash: string; title: string | null; created: number; signer_peer_id: string | null; signature: string | null; signer_public_key: string | null; share_mode?: string; discoverable?: number; expires_at?: number | null; content_kind?: string; mime_type?: string | null; media_width?: number | null; media_height?: number | null; is_encrypted?: number }>) => {
           if (err) {
             reject(err);
             return;
@@ -272,6 +386,14 @@ export class Database {
               signerPeerId: row.signer_peer_id || undefined,
               signature: row.signature || undefined,
               signerPublicKey: row.signer_public_key || undefined,
+              shareMode: parseShareMode(row.share_mode),
+              discoverable: row.discoverable !== 0,
+              expiresAt: parseNullableNumber(row.expires_at),
+              contentKind: parseContentKind(row.content_kind),
+              mimeType: row.mime_type || undefined,
+              mediaWidth: parseNullableNumber(row.media_width),
+              mediaHeight: parseNullableNumber(row.media_height),
+              isEncrypted: !!row.is_encrypted,
             }))
           );
         }
