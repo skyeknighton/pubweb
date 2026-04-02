@@ -80,6 +80,28 @@ function parseNullableNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function parseBoolean(value: unknown, fallback: boolean = false): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return fallback;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'no') {
+      return false;
+    }
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes') {
+      return true;
+    }
+  }
+  return fallback;
+}
+
 export class Database {
   private db: sqlite3.Database;
 
@@ -296,13 +318,13 @@ export class Database {
               signature: row.signature || undefined,
               signerPublicKey: row.signer_public_key || undefined,
               shareMode: parseShareMode(row.share_mode),
-              discoverable: !!row.discoverable,
+              discoverable: parseBoolean(row.discoverable, true),
               expiresAt: parseNullableNumber(row.expires_at),
               contentKind: parseContentKind(row.content_kind),
               mimeType: row.mime_type || undefined,
               mediaWidth: parseNullableNumber(row.media_width),
               mediaHeight: parseNullableNumber(row.media_height),
-              isEncrypted: !!row.is_encrypted,
+              isEncrypted: parseBoolean(row.is_encrypted, false),
             });
           } else {
             resolve(null);
@@ -335,13 +357,13 @@ export class Database {
                 signature: r.signature || undefined,
                 signerPublicKey: r.signer_public_key || undefined,
                 shareMode: parseShareMode(r.share_mode),
-                discoverable: !!r.discoverable,
+                discoverable: parseBoolean(r.discoverable, true),
                 expiresAt: parseNullableNumber(r.expires_at),
                 contentKind: parseContentKind(r.content_kind),
                 mimeType: r.mime_type || undefined,
                 mediaWidth: parseNullableNumber(r.media_width),
                 mediaHeight: parseNullableNumber(r.media_height),
-                isEncrypted: !!r.is_encrypted,
+                isEncrypted: parseBoolean(r.is_encrypted, false),
               }))
             );
           }
@@ -387,13 +409,13 @@ export class Database {
               signature: row.signature || undefined,
               signerPublicKey: row.signer_public_key || undefined,
               shareMode: parseShareMode(row.share_mode),
-              discoverable: row.discoverable !== 0,
+              discoverable: parseBoolean(row.discoverable, true),
               expiresAt: parseNullableNumber(row.expires_at),
               contentKind: parseContentKind(row.content_kind),
               mimeType: row.mime_type || undefined,
               mediaWidth: parseNullableNumber(row.media_width),
               mediaHeight: parseNullableNumber(row.media_height),
-              isEncrypted: !!row.is_encrypted,
+              isEncrypted: parseBoolean(row.is_encrypted, false),
             }))
           );
         }

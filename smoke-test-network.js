@@ -11,6 +11,7 @@ function parseArgs(argv) {
     resolveDelayMs: 2000,
     timeoutMs: 10000,
     label: 'smoke',
+    includePrivacyChecks: true,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -49,6 +50,9 @@ function parseArgs(argv) {
       case '--label':
         config.label = next;
         index += 1;
+        break;
+      case '--skip-privacy-checks':
+        config.includePrivacyChecks = false;
         break;
       default:
         break;
@@ -114,6 +118,8 @@ async function run() {
   const nonce = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   const marker = `PubWeb smoke ${config.label} ${nonce}`;
   const pageTitle = marker;
+  const unlistedMarker = `PubWeb smoke unlisted ${config.label} ${nonce}`;
+  const expiresMarker = `PubWeb smoke expires ${config.label} ${nonce}`;
 
   logStep('config', JSON.stringify({
     trackerUrl,
@@ -183,6 +189,63 @@ async function run() {
   assert(wrapperHtml.includes('PubWeb wrapper'), 'wrapper response missing wrapper shell');
   assert(wrapperHtml.includes(hash), 'wrapper response missing hash');
   logStep('wrapper', 'ok');
+
+  if (config.includePrivacyChecks) {
+    const unlistedPublishResponse = await fetchWithTimeout(`${publishUrl}/publish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: `<!doctype html><html><head><meta charset="utf-8"/><title>${unlistedMarker}</title></head><body><h1>${unlistedMarker}</h1></body></html>`,
+        title: unlistedMarker,
+        tags: ['smoke', config.label, 'unlisted'],
+        shareMode: 'unlisted',
+      }),
+    }, config.timeoutMs);
+    const unlistedPublishBody = await readBody(unlistedPublishResponse);
+    assert(unlistedPublishResponse.ok, `unlisted publish failed with status ${unlistedPublishResponse.status}: ${JSON.stringify(unlistedPublishBody)}`);
+    const unlistedHash = unlistedPublishBody.hash;
+    assert(unlistedHash, 'unlisted publish response did not include hash');
+    logStep('unlisted-publish', `${unlistedHash}`);
+
+    const discoverResponse = await fetchWithTimeout(`${trackerUrl}/discover?q=${encodeURIComponent(unlistedMarker)}&limit=10`, {}, config.timeoutMs);
+    const discoverBody = await readBody(discoverResponse);
+    assert(discoverResponse.ok, `discover query failed with status ${discoverResponse.status}: ${JSON.stringify(discoverBody)}`);
+    const discoverItems = Array.isArray(discoverBody.items) ? discoverBody.items : [];
+    const foundUnlisted = discoverItems.some((item) => item.hash === unlistedHash);
+    assert(!foundUnlisted, 'unlisted page should not appear in tracker discover results');
+    logStep('unlisted-discover-filter', 'ok');
+
+    const expiresAt = Date.now() + 2500;
+    const expiresPublishResponse = await fetchWithTimeout(`${publishUrl}/publish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        html: `<!doctype html><html><head><meta charset="utf-8"/><title>${expiresMarker}</title></head><body><h1>${expiresMarker}</h1></body></html>`,
+        title: expiresMarker,
+        tags: ['smoke', config.label, 'expires'],
+        shareMode: 'expires',
+        expiresAt,
+      }),
+    }, config.timeoutMs);
+    const expiresPublishBody = await readBody(expiresPublishResponse);
+    assert(expiresPublishResponse.ok, `expires publish failed with status ${expiresPublishResponse.status}: ${JSON.stringify(expiresPublishBody)}`);
+    const expiresHash = expiresPublishBody.hash;
+    assert(expiresHash, 'expires publish response did not include hash');
+    logStep('expires-publish', `${expiresHash} expiresAt=${expiresAt}`);
+
+    await sleep(3500);
+
+    const expiresResolveResponse = await fetchWithTimeout(`${trackerUrl}/resolve/${expiresHash}`, { cache: 'no-store' }, config.timeoutMs);
+    const expiresResolveBody = await readBody(expiresResolveResponse);
+    assert(expiresResolveResponse.status === 410, `expected resolve to return 410 for expired page, got ${expiresResolveResponse.status}: ${JSON.stringify(expiresResolveBody)}`);
+    assert(expiresResolveBody.status === 'expired', `expected expired status payload, got ${JSON.stringify(expiresResolveBody)}`);
+    logStep('expires-resolve', 'ok');
+
+    const expiresPageResponse = await fetchWithTimeout(`${trackerUrl}/page/${expiresHash}`, {}, config.timeoutMs);
+    const expiresPageBody = await readBody(expiresPageResponse);
+    assert(expiresPageResponse.status === 410, `expected tracker page fetch to return 410 for expired page, got ${expiresPageResponse.status}: ${JSON.stringify(expiresPageBody)}`);
+    logStep('expires-page', 'ok');
+  }
 
   console.log(`SMOKE PASS ${hash}`);
 }

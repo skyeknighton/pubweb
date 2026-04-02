@@ -430,6 +430,7 @@ class Tracker {
     | { status: 'ready'; html: string; contentType: string; target: string; peerId: string }
     | { status: 'warming'; reason: string }
     | { status: 'missing'; reason: string }
+    | { status: 'expired'; reason: string }
   > {
     const candidates = this.getResolveCandidates(hash);
     if (candidates.length === 0) {
@@ -438,7 +439,7 @@ class Tracker {
         const activePeers = this.getActivePeersForHash(hash, 120_000);
         const hasOnlyExpired = activePeers.length > 0 && activePeers.every((peer) => this.isExpired(peer, hash));
         if (hasOnlyExpired) {
-          return { status: 'missing', reason: 'Page expired on official network.' };
+          return { status: 'expired', reason: 'Page expired on official network.' };
         }
       }
       return known
@@ -492,7 +493,9 @@ class Tracker {
       const size = Number.isFinite(requestedSize)
         ? Math.max(120, Math.min(requestedSize, 1024))
         : 260;
-      const targetUrl = `${req.protocol}://${req.get('host')}/${hash}`;
+      const rawKey = typeof req.query.k === 'string' ? req.query.k : '';
+      const fragmentKey = /^[A-Za-z0-9_-]{8,256}$/.test(rawKey) ? rawKey : '';
+      const targetUrl = `${req.protocol}://${req.get('host')}/${hash}${fragmentKey ? `#k=${fragmentKey}` : ''}`;
 
       try {
         const svg = await QRCode.toString(targetUrl, {
@@ -708,10 +711,54 @@ class Tracker {
       return { dataUrl: out, width, height, bytes, mimeType: 'image/jpeg' };
     }
 
-    function buildImagePageHtml(title, caption, dataUrl) {
+    function toBase64Url(bytes) {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+      let out = '';
+      for (let i = 0; i < bytes.length; i += 3) {
+        const a = bytes[i];
+        const b = i + 1 < bytes.length ? bytes[i + 1] : 0;
+        const c = i + 2 < bytes.length ? bytes[i + 2] : 0;
+        const chunk = (a << 16) | (b << 8) | c;
+        out += chars[(chunk >> 18) & 63];
+        out += chars[(chunk >> 12) & 63];
+        out += i + 1 < bytes.length ? chars[(chunk >> 6) & 63] : '';
+        out += i + 2 < bytes.length ? chars[chunk & 63] : '';
+      }
+      return out;
+    }
+
+    async function encryptDataUrl(dataUrl) {
+      const encoder = new TextEncoder();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const keyBytes = crypto.getRandomValues(new Uint8Array(32));
+      const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+      const cipherBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(dataUrl));
+      const cipherBytes = new Uint8Array(cipherBuffer);
+      return {
+        iv: toBase64Url(iv),
+        cipher: toBase64Url(cipherBytes),
+        key: toBase64Url(keyBytes),
+      };
+    }
+
+    function buildImagePageHtml(title, caption, pageData) {
       const safeTitle = (title || 'PubWeb Image').replace(/[<>]/g, '');
       const safeCaption = (caption || '').replace(/[<>]/g, '');
       const captionHtml = safeCaption ? '<div class="cap">' + safeCaption + '</div>' : '';
+      const isEncrypted = !!(pageData && pageData.cipher && pageData.iv);
+      const imageMarkup = isEncrypted
+        ? '<div class="locked" id="lockedBox">Private link required. Open with full link containing #k=...</div><img class="main" id="mainImage" alt="Shared image" style="display:none;" />'
+        : '<img class="main" src="' + pageData.dataUrl + '" alt="Shared image" />';
+      const decryptScript = isEncrypted
+        ? '<script>' +
+          'const ivB64=' + JSON.stringify(pageData.iv) + ';' +
+          'const cipherB64=' + JSON.stringify(pageData.cipher) + ';' +
+          'const keyParam=(new URLSearchParams((location.hash||"#").slice(1))).get("k")||"";' +
+          'const lock=document.getElementById("lockedBox");const img=document.getElementById("mainImage");' +
+          'function fromB64Url(s){const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";let bits=0,v=0,o=[];for(let i=0;i<s.length;i++){const idx=chars.indexOf(s[i]);if(idx<0)continue;v=(v<<6)|idx;bits+=6;if(bits>=8){bits-=8;o.push((v>>bits)&255);}}return new Uint8Array(o);}' +
+          'async function decrypt(){if(!keyParam){return;}try{const keyBytes=fromB64Url(keyParam);const iv=fromB64Url(ivB64);const data=fromB64Url(cipherB64);const key=await crypto.subtle.importKey("raw",keyBytes,"AES-GCM",false,["decrypt"]);const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,data);const text=new TextDecoder().decode(plain);img.src=text;img.style.display="block";if(lock)lock.style.display="none";}catch(e){if(lock)lock.textContent="Unable to decrypt. Verify you opened the full private link.";}}decrypt();' +
+          '<' + '/script>'
+        : '';
       return '<!doctype html>' +
         '<html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />' +
         '<title>' + safeTitle + '</title>' +
@@ -723,11 +770,13 @@ class Tracker {
         '.share-link{font-size:12px;color:#ffd6bd;text-decoration:none;border:1px solid #6b5244;border-radius:999px;padding:5px 9px;background:#2a1f1a;white-space:nowrap;}' +
         '.pic-wrap{padding:10px;display:flex;justify-content:center;align-items:center;}' +
         'img.main{max-width:100%;max-height:78vh;border-radius:10px;box-shadow:0 8px 26px rgba(0,0,0,.32);}' +
+        '.locked{padding:16px;border:1px dashed #7b5f51;border-radius:10px;color:#e9cec0;background:#2a1d18;font-size:13px;}' +
         '.cap{padding:0 12px 14px;color:#d8cbc2;font-size:13px;}' +
         '</style></head><body>' +
         '<div class="top"><div class="top-row"><div class="t">' + safeTitle + '</div><a class="share-link" href="https://pubweb.online/share-image">Share your own image</a></div></div>' +
-        '<div class="pic-wrap"><img class="main" src="' + dataUrl + '" alt="Shared image" /></div>' +
+        '<div class="pic-wrap">' + imageMarkup + '</div>' +
         captionHtml +
+        decryptScript +
         '</body></html>';
     }
 
@@ -745,7 +794,14 @@ class Tracker {
       try {
         const mode = modeInput.value;
         const compressed = await fileToCompressedDataUrl(file, qualityInput.value);
-        const html = buildImagePageHtml(titleInput.value.trim(), captionInput.value.trim(), compressed.dataUrl);
+        const needsPrivatePayload = mode === 'private-link' || mode === 'expires';
+        const encryptedPayload = needsPrivatePayload
+          ? await encryptDataUrl(compressed.dataUrl)
+          : null;
+        const pageData = encryptedPayload
+          ? { cipher: encryptedPayload.cipher, iv: encryptedPayload.iv }
+          : { dataUrl: compressed.dataUrl };
+        const html = buildImagePageHtml(titleInput.value.trim(), captionInput.value.trim(), pageData);
         const payload = {
           html,
           title: titleInput.value.trim() || 'Shared image',
@@ -772,10 +828,11 @@ class Tracker {
           throw new Error(result.error || ('Publish failed (' + response.status + ')'));
         }
 
-        const finalUrl = location.origin + '/' + result.hash;
+        const fragment = encryptedPayload ? '#k=' + encryptedPayload.key : '';
+        const finalUrl = location.origin + '/' + result.hash + fragment;
         shareLink.href = finalUrl;
         shareLink.textContent = finalUrl;
-        qrImg.src = '/qr/' + result.hash + '.svg?size=240';
+        qrImg.src = '/qr/' + result.hash + '.svg?size=240' + (encryptedPayload ? '&k=' + encodeURIComponent(encryptedPayload.key) : '');
         successBox.style.display = 'block';
         statusEl.textContent = 'Published. Share the link or scan the QR.';
       } catch (err) {
@@ -1304,6 +1361,10 @@ class Tracker {
           .send(resolved.html);
       }
 
+      if (resolved.status === 'expired') {
+        return res.status(410).json({ error: resolved.reason, status: 'expired' });
+      }
+
       if (resolved.status === 'missing') {
         return res.status(404).json({ error: resolved.reason });
       }
@@ -1320,6 +1381,10 @@ class Tracker {
 
       if (resolved.status === 'ready') {
         return res.json({ status: 'ready' });
+      }
+
+      if (resolved.status === 'expired') {
+        return res.status(410).json({ status: 'expired', reason: resolved.reason });
       }
 
       if (resolved.status === 'missing') {
@@ -1388,7 +1453,8 @@ class Tracker {
     const qrImage = document.getElementById('qrImage');
     window.__pubwebWrapperVersion = wrapperVersion;
 
-    qrImage.src = '/qr/' + hash + '.svg?size=260';
+    const fragmentKey = (new URLSearchParams((window.location.hash || '#').slice(1))).get('k') || '';
+    qrImage.src = '/qr/' + hash + '.svg?size=260' + (fragmentKey ? '&k=' + encodeURIComponent(fragmentKey) : '');
     qrToggle.addEventListener('click', () => {
       const showing = qrImage.style.display === 'block';
       qrImage.style.display = showing ? 'none' : 'block';
@@ -1494,6 +1560,10 @@ class Tracker {
         }
 
         const data = await res.json().catch(() => ({}));
+        if (res.status === 410) {
+          statusText.textContent = data.reason || 'This page has expired on the official network.';
+          return;
+        }
         if (res.status === 404) {
           statusText.textContent = data.reason || 'This hash is not currently available.';
           return;

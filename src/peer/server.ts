@@ -52,6 +52,18 @@ interface AnnouncePageSummary {
   isEncrypted: boolean;
 }
 
+interface RemotePageMeta {
+  title?: string;
+  shareMode?: ShareMode;
+  discoverable?: boolean;
+  expiresAt?: number;
+  contentKind?: ContentKind;
+  mimeType?: string;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  isEncrypted?: boolean;
+}
+
 function normalizeShareMode(value: unknown): ShareMode {
   if (value === 'unlisted' || value === 'private-link' || value === 'expires') {
     return value;
@@ -640,6 +652,7 @@ class PeerServer {
         }
 
         let html: string | null = null;
+        let remoteMeta: RemotePageMeta | null = null;
         const swarmPeers = await this.getSwarmPeers(hash);
         for (const peer of swarmPeers) {
           const peerUrl = this.buildPeerPageUrl(peer, hash);
@@ -649,6 +662,15 @@ class PeerServer {
               continue;
             }
             html = await peerRes.text();
+
+            try {
+              const metaRes = await fetch(`${peerUrl}/meta`);
+              if (metaRes.ok) {
+                remoteMeta = await metaRes.json() as RemotePageMeta;
+              }
+            } catch {
+              // Continue without metadata if source peer meta fetch fails
+            }
             break;
           } catch {
             // Try next peer candidate
@@ -670,12 +692,28 @@ class PeerServer {
         }
 
         const inferredTitle = this.extractTitleFromHtml(html, `Assigned ${hash.slice(0, 12)}`);
+        const remoteShareMode = normalizeShareMode(remoteMeta?.shareMode);
+        const remoteContentKind = normalizeContentKind(remoteMeta?.contentKind);
+        const remoteExpiresAt = normalizeExpiresAt(remoteMeta?.expiresAt);
+        const remoteDiscoverable = typeof remoteMeta?.discoverable === 'boolean'
+          ? remoteMeta.discoverable
+          : !(remoteShareMode === 'unlisted' || remoteShareMode === 'private-link');
 
         await this.db.addPage({
           html,
-          title: inferredTitle,
+          title: typeof remoteMeta?.title === 'string' && remoteMeta.title.trim()
+            ? remoteMeta.title.trim().slice(0, 160)
+            : inferredTitle,
           tags: ['assigned'],
           author: 'network',
+          shareMode: remoteShareMode,
+          discoverable: remoteDiscoverable,
+          expiresAt: remoteExpiresAt,
+          contentKind: remoteContentKind,
+          mimeType: typeof remoteMeta?.mimeType === 'string' ? remoteMeta.mimeType : undefined,
+          mediaWidth: typeof remoteMeta?.mediaWidth === 'number' ? remoteMeta.mediaWidth : undefined,
+          mediaHeight: typeof remoteMeta?.mediaHeight === 'number' ? remoteMeta.mediaHeight : undefined,
+          isEncrypted: !!remoteMeta?.isEncrypted,
         });
 
         this.pages.add(hash);
