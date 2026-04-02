@@ -830,13 +830,13 @@ class Tracker {
         '.top{position:sticky;top:0;z-index:2;background:#201916d9;backdrop-filter:blur(8px);padding:10px 12px;border-bottom:1px solid #3c302a;}' +
         '.top-row{display:flex;justify-content:space-between;align-items:center;gap:10px;}' +
         '.t{font-size:14px;font-weight:700;}' +
-        '.share-link{font-size:12px;color:#ffd6bd;text-decoration:none;border:1px solid #6b5244;border-radius:999px;padding:5px 9px;background:#2a1f1a;white-space:nowrap;}' +
+        '.pubweb-link{font-size:12px;color:#ffd6bd;text-decoration:none;border:1px solid #6b5244;border-radius:999px;padding:5px 9px;background:#2a1f1a;white-space:nowrap;font-weight:700;}' +
         '.pic-wrap{padding:10px;display:flex;justify-content:center;align-items:center;}' +
         'img.main{max-width:100%;max-height:78vh;border-radius:10px;box-shadow:0 8px 26px rgba(0,0,0,.32);}' +
         '.locked{padding:16px;border:1px dashed #7b5f51;border-radius:10px;color:#e9cec0;background:#2a1d18;font-size:13px;}' +
         '.cap{padding:0 12px 14px;color:#d8cbc2;font-size:13px;}' +
         '</style></head><body>' +
-        '<div class="top"><div class="top-row">' + titleMarkup + '<a class="share-link" href="https://pubweb.online/share-image">Share your own image</a></div></div>' +
+        '<div class="top"><div class="top-row">' + titleMarkup + '<a class="pubweb-link" href="https://pubweb.online/">PubWeb</a></div></div>' +
         '<div class="pic-wrap">' + imageMarkup + '</div>' +
         extraCaptionMarkup +
         decryptScript +
