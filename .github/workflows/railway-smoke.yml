@@ -1,0 +1,46 @@
+name: Railway Deploy Smoke
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  railway-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for Railway readiness
+        env:
+          TRACKER_URL: ${{ vars.PUBWEB_TRACKER_URL || 'https://tracker.pubweb.online' }}
+          PUBLISH_URL: ${{ vars.PUBWEB_PUBLISH_URL || 'https://publish.pubweb.online' }}
+          READY_TIMEOUT_MS: ${{ vars.PUBWEB_READY_TIMEOUT_MS || '900000' }}
+          READY_INTERVAL_MS: ${{ vars.PUBWEB_READY_INTERVAL_MS || '10000' }}
+          READY_STABLE_COUNT: ${{ vars.PUBWEB_READY_STABLE_COUNT || '3' }}
+        run: npm run wait:railway
+
+      - name: Run smoke test
+        env:
+          TRACKER_URL: ${{ vars.PUBWEB_TRACKER_URL || 'https://tracker.pubweb.online' }}
+          PUBLISH_URL: ${{ vars.PUBWEB_PUBLISH_URL || 'https://publish.pubweb.online' }}
+          SMOKE_LABEL: railway-ci
+          SMOKE_SKIP_PRIVACY_CHECKS: ${{ vars.PUBWEB_SMOKE_SKIP_PRIVACY_CHECKS || '0' }}
+          SMOKE_TIMEOUT_MS: ${{ vars.PUBWEB_SMOKE_TIMEOUT_MS || '120000' }}
+          SMOKE_RESOLVE_TIMEOUT_MS: ${{ vars.PUBWEB_SMOKE_RESOLVE_TIMEOUT_MS || '90000' }}
+          SMOKE_POST_PUBLISH_DELAY_MS: ${{ vars.PUBWEB_SMOKE_POST_PUBLISH_DELAY_MS || '2000' }}
+          SMOKE_MAX_AGE_SEC: ${{ vars.PUBWEB_SMOKE_MAX_AGE_SEC || '900' }}
+          SMOKE_EXPIRES_IN_MINUTES: ${{ vars.PUBWEB_SMOKE_EXPIRES_IN_MINUTES || '15' }}
+        run: npm run smoke:railway

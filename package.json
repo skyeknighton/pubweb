@@ -19,6 +19,8 @@
     "tracker": "node dist/main/tracker/index.js",
     "smoke": "node smoke-test-network.js",
     "smoke:railway": "node smoke-test-network.js --label railway",
+    "wait:railway": "node wait-for-railway-ready.js",
+    "smoke:railway:auto": "npm run wait:railway && npm run smoke:railway",
     "dist:win": "npm run build && electron-builder --win nsis portable --publish never",
     "test": "jest"
   },
