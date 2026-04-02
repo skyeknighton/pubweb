@@ -358,9 +358,11 @@ class PeerServer {
 
   private async announceTracker() {
     try {
+      const now = Date.now();
       const pages = Array.from(this.pages.keys());
       const pageSummaries = (await this.db.getPageSummaries(500))
         .filter((summary) => pages.includes(summary.hash))
+        .filter((summary) => !summary.expiresAt || summary.expiresAt > now)
         .map<AnnouncePageSummary>((summary) => ({
           hash: summary.hash,
           title: summary.title,
@@ -392,7 +394,7 @@ class PeerServer {
           reachable: reachability.reachable,
           relayRequired: reachability.relayRequired,
           endpoints: this.getAdvertisedEndpoints(),
-          pages,
+          pages: pageSummaries.map((s) => s.hash),
           pageSummaries,
           bytesUploaded: (await this.db.getStats()).bytesUploaded,
           bytesDownloaded: (await this.db.getStats()).bytesDownloaded,
