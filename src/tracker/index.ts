@@ -1439,19 +1439,23 @@ class Tracker {
       for (const hash of siteHashes) {
         const peers = this.getActivePeersForHash(hash);
         if (peers.length === 0) continue;
+        // skip pages that have already expired on all peers
+        const allExpired = peers.every((peer) => this.isExpired(peer, hash, now));
+        if (allExpired) continue;
         const mode = this.getFirstModeForHash(hash, peers);
         if (mode === 'unlisted' || mode === 'private-link') {
           unlistedCount++;
         }
         if (mode === 'expires') {
+          // only count pages with a future expiry timestamp
+          const earliestFutureExpiry = peers
+            .map((peer) => peer.pageExpiresAt[hash])
+            .filter((exp): exp is number => typeof exp === 'number' && exp > now)
+            .reduce((min, exp) => Math.min(min, exp), Infinity);
+          if (earliestFutureExpiry === Infinity) continue;
           expiringCount++;
-          for (const peer of peers) {
-            const exp = peer.pageExpiresAt[hash];
-            if (typeof exp === 'number' && exp > now) {
-              if (nextExpiryMs === null || exp < nextExpiryMs) {
-                nextExpiryMs = exp;
-              }
-            }
+          if (nextExpiryMs === null || earliestFutureExpiry < nextExpiryMs) {
+            nextExpiryMs = earliestFutureExpiry;
           }
         }
       }
