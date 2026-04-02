@@ -12,6 +12,8 @@ function parseArgs(argv) {
     timeoutMs: 10000,
     label: 'smoke',
     includePrivacyChecks: true,
+    smokeTtlMs: 5 * 60 * 1000,
+    shortExpiryMs: 2500,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -49,6 +51,14 @@ function parseArgs(argv) {
         break;
       case '--label':
         config.label = next;
+        index += 1;
+        break;
+      case '--smoke-ttl-ms':
+        config.smokeTtlMs = parseInt(next, 10);
+        index += 1;
+        break;
+      case '--short-expiry-ms':
+        config.shortExpiryMs = parseInt(next, 10);
         index += 1;
         break;
       case '--skip-privacy-checks':
@@ -120,13 +130,23 @@ async function run() {
   const pageTitle = marker;
   const unlistedMarker = `PubWeb smoke unlisted ${config.label} ${nonce}`;
   const expiresMarker = `PubWeb smoke expires ${config.label} ${nonce}`;
+  const smokeExpiresAt = Date.now() + config.smokeTtlMs;
 
   logStep('config', JSON.stringify({
     trackerUrl,
     publishUrl,
     peerStatusUrls,
     expectedSwarmCount: config.expectedSwarmCount,
+    smokeTtlMs: config.smokeTtlMs,
+    shortExpiryMs: config.shortExpiryMs,
   }));
+
+  // Expiration-based cleanup strategy: every smoke page expires automatically.
+  const existingSmokeDiscover = await fetchWithTimeout(`${trackerUrl}/discover?q=${encodeURIComponent('PubWeb smoke')}&limit=100`, {}, config.timeoutMs);
+  const existingSmokeBody = await readBody(existingSmokeDiscover);
+  if (existingSmokeDiscover.ok && Array.isArray(existingSmokeBody.items)) {
+    logStep('smoke-retention', `Found ${existingSmokeBody.items.length} prior smoke pages; new pages will auto-expire in ${config.smokeTtlMs}ms`);
+  }
 
   await checkJsonEndpoint('tracker-health', `${trackerUrl}/health`, config.timeoutMs);
   const publishStatus = await checkJsonEndpoint('publish-peer-status', `${publishUrl}/status`, config.timeoutMs);
@@ -143,6 +163,8 @@ async function run() {
       html: `<!doctype html><html><head><meta charset="utf-8"/><title>${pageTitle}</title></head><body><h1>${marker}</h1><p>network smoke test</p></body></html>`,
       title: pageTitle,
       tags: ['smoke', config.label],
+      shareMode: 'expires',
+      expiresAt: smokeExpiresAt,
     }),
   }, config.timeoutMs);
   const publishBody = await readBody(publishResponse);
@@ -199,6 +221,7 @@ async function run() {
         title: unlistedMarker,
         tags: ['smoke', config.label, 'unlisted'],
         shareMode: 'unlisted',
+        expiresAt: smokeExpiresAt,
       }),
     }, config.timeoutMs);
     const unlistedPublishBody = await readBody(unlistedPublishResponse);
@@ -215,7 +238,7 @@ async function run() {
     assert(!foundUnlisted, 'unlisted page should not appear in tracker discover results');
     logStep('unlisted-discover-filter', 'ok');
 
-    const expiresAt = Date.now() + 2500;
+    const expiresAt = Date.now() + config.shortExpiryMs;
     const expiresPublishResponse = await fetchWithTimeout(`${publishUrl}/publish`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -233,7 +256,7 @@ async function run() {
     assert(expiresHash, 'expires publish response did not include hash');
     logStep('expires-publish', `${expiresHash} expiresAt=${expiresAt}`);
 
-    await sleep(3500);
+    await sleep(config.shortExpiryMs + 1000);
 
     const expiresResolveResponse = await fetchWithTimeout(`${trackerUrl}/resolve/${expiresHash}`, { cache: 'no-store' }, config.timeoutMs);
     const expiresResolveBody = await readBody(expiresResolveResponse);
