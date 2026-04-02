@@ -1474,7 +1474,6 @@ class Tracker {
 <body>
   <h1>PubWeb Network</h1>
   <p>Live peers and page index (one-server / one-page test)</p>
-  <p><a href="/share-image">Mobile image share</a></p>
   <p><a class="onboard" href="/${this.onboardingHash}">Start here: Make your own page (download + publish loop)</a></p>
   <p><a class="shareimg" href="/share-image">Share image from phone</a></p>
   <p style="color:#555;font-size:0.95em">
