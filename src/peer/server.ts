@@ -14,6 +14,7 @@ const MIN_DYNAMIC_PORT = 49152;
 const MAX_DYNAMIC_PORT = 65535;
 const MAX_PORT_CANDIDATES = 20;
 const DEFAULT_MAX_PAGE_BYTES = 1_474_560;
+const DEFAULT_EXPIRED_CLEANUP_INTERVAL_MS = 60_000;
 
 interface PeerEndpoint {
   kind: 'public' | 'local';
@@ -101,6 +102,7 @@ class PeerServer {
   private db: Database;
   private peerId: string;
   private announceInterval: NodeJS.Timeout | null = null;
+  private expiredCleanupInterval: NodeJS.Timeout | null = null;
   private assignmentInterval: NodeJS.Timeout | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private publicHost: string;
@@ -116,6 +118,7 @@ class PeerServer {
   private signerPublicKey: string;
   private requestCounters: Map<string, { count: number; resetAt: number }> = new Map();
   private adminToken: string;
+  private expiredCleanupIntervalMs: number;
 
   public port: number = 3000;
   public isListening: boolean = false;
@@ -138,7 +141,30 @@ class PeerServer {
       ? configuredMaxPageBytes
       : DEFAULT_MAX_PAGE_BYTES;
     this.adminToken = String(process.env.PEER_ADMIN_TOKEN || process.env.ADMIN_TOKEN || '').trim();
+    const configuredCleanupMs = parseInt(process.env.PEER_EXPIRED_CLEANUP_INTERVAL_MS || '', 10);
+    this.expiredCleanupIntervalMs = Number.isFinite(configuredCleanupMs) && configuredCleanupMs >= 5_000
+      ? configuredCleanupMs
+      : DEFAULT_EXPIRED_CLEANUP_INTERVAL_MS;
     this.setupRoutes();
+  }
+
+  private async cleanupExpiredPages(limit: number = 1000): Promise<number> {
+    try {
+      const expiredHashes = await this.db.findExpiredPageHashes(Date.now(), limit);
+      if (expiredHashes.length === 0) {
+        return 0;
+      }
+
+      const deleted = await this.db.deletePagesByHashes(expiredHashes);
+      if (deleted > 0) {
+        this.pages = new Set(await this.db.getPageHashes(2000));
+        this.peerCount = this.pages.size;
+      }
+      return deleted;
+    } catch (err) {
+      console.warn('Failed to cleanup expired pages:', err);
+      return 0;
+    }
   }
 
   private isAdminAuthorized(req: express.Request): boolean {
@@ -401,7 +427,7 @@ class PeerServer {
         }),
       });
       if (response.ok) {
-        console.log('Successfully announced to tracker');
+        console.log(`Successfully announced ${pageSummaries.length} pages to tracker`);
       } else {
         console.warn('Tracker announce failed with status:', response.status);
       }
@@ -673,11 +699,22 @@ class PeerServer {
       this.httpServer = this.app.listen(port, async () => {
         this.isListening = true;
         console.log(`Peer server listening on port ${port}`);
+        const cleaned = await this.cleanupExpiredPages();
+        if (cleaned > 0) {
+          console.log(`Cleaned up ${cleaned} expired pages before initial announce`);
+        }
         await this.probeReachability();
         await this.announceTracker();
         await this.sendHeartbeat();
         await this.syncAssignments();
         this.announceInterval = setInterval(() => this.announceTracker(), 15000);
+        this.expiredCleanupInterval = setInterval(async () => {
+          const deleted = await this.cleanupExpiredPages();
+          if (deleted > 0) {
+            console.log(`Cleaned up ${deleted} expired pages`);
+            await this.announceTracker();
+          }
+        }, this.expiredCleanupIntervalMs);
         this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 60000);
         this.assignmentInterval = setInterval(() => this.syncAssignments(), 60000);
         resolve();
@@ -848,6 +885,10 @@ class PeerServer {
     if (this.announceInterval) {
       clearInterval(this.announceInterval);
       this.announceInterval = null;
+    }
+    if (this.expiredCleanupInterval) {
+      clearInterval(this.expiredCleanupInterval);
+      this.expiredCleanupInterval = null;
     }
     if (this.assignmentInterval) {
       clearInterval(this.assignmentInterval);

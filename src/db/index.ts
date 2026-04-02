@@ -676,6 +676,30 @@ export class Database {
     return uniqueHashes.length;
   }
 
+  async findExpiredPageHashes(beforeTimestamp: number = Date.now(), limit: number = 500): Promise<string[]> {
+    const cutoff = Number.isFinite(beforeTimestamp) ? beforeTimestamp : Date.now();
+    const cappedLimit = Math.max(1, Math.min(limit, 5000));
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        `SELECT hash
+         FROM pages
+         WHERE expires_at IS NOT NULL
+           AND expires_at > 0
+           AND expires_at <= ?
+         ORDER BY expires_at ASC
+         LIMIT ?`,
+        [cutoff, cappedLimit],
+        (err, rows: Array<{ hash: string }>) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve((rows || []).map((row) => row.hash).filter((hash) => typeof hash === 'string' && hash.length > 0));
+        }
+      );
+    });
+  }
+
   close(): void {
     this.db.close();
   }
