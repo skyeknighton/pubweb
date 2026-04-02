@@ -1555,7 +1555,7 @@ class Tracker {
         if (res.ok) {
           statusText.style.display = 'none';
           frameWrap.style.display = 'flex';
-          frame.src = '/page/' + hash;
+          frame.src = '/page/' + hash + (window.location.hash || '');
           return;
         }
 
