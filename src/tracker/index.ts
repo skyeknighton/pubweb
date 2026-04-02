@@ -34,6 +34,8 @@ interface TrackerEntry {
   lastSeen: number;
 }
 
+type ShareMode = 'public' | 'unlisted' | 'private-link' | 'expires';
+
 class Tracker {
   private app = express();
   private httpServer: Server | null = null;
@@ -174,7 +176,7 @@ class Tracker {
     return normalized.slice(0, 160);
   }
 
-  private normalizeShareMode(value: unknown): 'public' | 'unlisted' | 'private-link' | 'expires' {
+  private normalizeShareMode(value: unknown): ShareMode {
     return value === 'unlisted' || value === 'private-link' || value === 'expires' ? value : 'public';
   }
 
@@ -204,15 +206,66 @@ class Tracker {
     return mode !== 'private-link' && mode !== 'unlisted';
   }
 
-  private getFirstModeForHash(hash: string): 'public' | 'unlisted' | 'private-link' | 'expires' {
-    const peers = this.getActivePeersForHash(hash, 120_000);
-    for (const peer of peers) {
+  private getFirstModeForHash(hash: string, peers?: TrackerEntry[]): ShareMode {
+    const activePeers = peers || this.getActivePeersForHash(hash, 120_000);
+    let sawExpires = false;
+
+    for (const peer of activePeers) {
+      const mode = peer.pageModes[hash];
+      if (!mode) {
+        continue;
+      }
+
+      if (mode === 'private-link' || mode === 'unlisted') {
+        return mode;
+      }
+
+      if (mode === 'expires') {
+        sawExpires = true;
+      }
+    }
+
+    if (sawExpires) {
+      return 'expires';
+    }
+
+    for (const peer of activePeers) {
       const mode = peer.pageModes[hash];
       if (mode) {
         return mode;
       }
     }
+
     return 'public';
+  }
+
+  private isHashDiscoverable(hash: string, activePeers: TrackerEntry[], now: number = Date.now()): boolean {
+    let sawExplicitMetadata = false;
+
+    for (const peer of activePeers) {
+      if (this.isExpired(peer, hash, now)) {
+        return false;
+      }
+
+      const hasMode = typeof peer.pageModes[hash] === 'string';
+      const hasDiscoverable = typeof peer.pageDiscoverable[hash] === 'boolean';
+      const hasExpiresAt = typeof peer.pageExpiresAt[hash] === 'number';
+      if (hasMode || hasDiscoverable || hasExpiresAt) {
+        sawExplicitMetadata = true;
+      }
+
+      if (peer.pageDiscoverable[hash] === false) {
+        return false;
+      }
+
+      const mode = peer.pageModes[hash];
+      if (mode === 'private-link' || mode === 'unlisted') {
+        return false;
+      }
+    }
+
+    // Legacy peers may omit privacy metadata; keep them discoverable by default.
+    return sawExplicitMetadata || activePeers.length > 0;
   }
 
   private extractObservedIp(req: Request): string | undefined {
@@ -1135,27 +1188,26 @@ class Tracker {
             return null;
           }
 
-          const discoverablePeers = activePeers.filter((peer) => this.isDiscoverable(peer, hash));
-          if (discoverablePeers.length === 0) {
+          if (!this.isHashDiscoverable(hash, activePeers, now)) {
             return null;
           }
 
-          const title = discoverablePeers
+          const title = activePeers
             .map((peer) => peer.pageTitles?.[hash])
             .find((value): value is string => !!value) || `Untitled ${hash.slice(0, 12)}`;
 
-          const latestSeen = discoverablePeers.reduce((maxSeen, peer) => Math.max(maxSeen, peer.lastSeen), 0);
+          const latestSeen = activePeers.reduce((maxSeen, peer) => Math.max(maxSeen, peer.lastSeen), 0);
           return {
             hash,
             title,
-            copies: discoverablePeers.length,
+            copies: activePeers.length,
             pageVisits: siteStats.get(hash)?.pageVisits || 0,
             latestSeen,
             url: `/${hash}`,
-            mode: this.getFirstModeForHash(hash),
+            mode: this.getFirstModeForHash(hash, activePeers),
           };
         })
-        .filter((item): item is { hash: string; title: string; copies: number; pageVisits: number; latestSeen: number; url: string; mode: 'public' | 'unlisted' | 'private-link' | 'expires' } => !!item)
+        .filter((item): item is { hash: string; title: string; copies: number; pageVisits: number; latestSeen: number; url: string; mode: ShareMode } => !!item)
         .filter((item) => {
           if (!q) {
             return true;
@@ -1295,6 +1347,9 @@ class Tracker {
       const topPages = siteHashes
         .map((hash) => {
           const peers = this.getActivePeersForHash(hash);
+          if (!this.isHashDiscoverable(hash, peers, Date.now())) {
+            return null;
+          }
           const title = peers
             .map((peer) => peer.pageTitles?.[hash])
             .find((value): value is string => !!value) || `Untitled ${hash.slice(0, 12)}`;
@@ -1303,9 +1358,10 @@ class Tracker {
             title,
             copies: peers.length,
             pageVisits: siteStats.get(hash)?.pageVisits || 0,
-            mode: this.getFirstModeForHash(hash),
+            mode: this.getFirstModeForHash(hash, peers),
           };
         })
+          .filter((page): page is { hash: string; title: string; copies: number; pageVisits: number; mode: ShareMode } => !!page)
           .filter((page) => page.copies > 0 && page.mode !== 'private-link' && page.mode !== 'unlisted')
         .sort((a, b) => {
           if (b.pageVisits !== a.pageVisits) {
