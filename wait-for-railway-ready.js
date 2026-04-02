@@ -1,13 +1,23 @@
 const DEFAULT_TRACKER_URL = process.env.TRACKER_URL || 'https://tracker.pubweb.online';
 const DEFAULT_PUBLISH_URL = process.env.PUBLISH_URL || 'https://confident-success-production-8602.up.railway.app';
 
+function readEnvInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === '') {
+    return fallback;
+  }
+
+  const parsed = parseInt(String(raw), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function parseArgs(argv) {
   const config = {
     trackerUrl: DEFAULT_TRACKER_URL,
     publishUrl: DEFAULT_PUBLISH_URL,
-    timeoutMs: 15 * 60 * 1000,
-    intervalMs: 15 * 1000,
-    stableChecks: 3,
+    timeoutMs: readEnvInt('READY_TIMEOUT_MS', 15 * 60 * 1000),
+    intervalMs: readEnvInt('READY_INTERVAL_MS', 15 * 1000),
+    stableChecks: readEnvInt('READY_STABLE_COUNT', 3),
   };
 
   for (let i = 0; i < argv.length; i += 1) {

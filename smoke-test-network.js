@@ -1,19 +1,65 @@
 const DEFAULT_TRACKER_URL = process.env.TRACKER_URL || 'https://tracker.pubweb.online';
 const DEFAULT_PUBLISH_URL = process.env.PUBLISH_URL || 'https://confident-success-production-8602.up.railway.app';
 
+function readEnvInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === '') {
+    return fallback;
+  }
+
+  const parsed = parseInt(String(raw), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readEnvBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === '') {
+    return fallback;
+  }
+
+  const value = String(raw).trim().toLowerCase();
+  if (value === '1' || value === 'true' || value === 'yes' || value === 'on') {
+    return true;
+  }
+  if (value === '0' || value === 'false' || value === 'no' || value === 'off') {
+    return false;
+  }
+  return fallback;
+}
+
+const DEFAULT_SMOKE_TTL_MS = (() => {
+  const explicitTtl = readEnvInt('SMOKE_TTL_MS', -1);
+  if (explicitTtl > 0) {
+    return explicitTtl;
+  }
+
+  const fromMaxAgeSec = readEnvInt('SMOKE_MAX_AGE_SEC', -1);
+  if (fromMaxAgeSec > 0) {
+    return fromMaxAgeSec * 1000;
+  }
+
+  const fromExpiryMinutes = readEnvInt('SMOKE_EXPIRES_IN_MINUTES', -1);
+  if (fromExpiryMinutes > 0) {
+    return fromExpiryMinutes * 60 * 1000;
+  }
+
+  return 5 * 60 * 1000;
+})();
+
 function parseArgs(argv) {
   const config = {
     trackerUrl: DEFAULT_TRACKER_URL,
     publishUrl: DEFAULT_PUBLISH_URL,
     peerStatusUrls: [],
-    expectedSwarmCount: 1,
-    resolveAttempts: 10,
-    resolveDelayMs: 2000,
-    timeoutMs: 10000,
-    label: 'smoke',
-    includePrivacyChecks: true,
-    smokeTtlMs: 5 * 60 * 1000,
-    shortExpiryMs: 2500,
+    expectedSwarmCount: readEnvInt('SMOKE_EXPECTED_SWARM', 1),
+    resolveAttempts: readEnvInt('SMOKE_RESOLVE_ATTEMPTS', 10),
+    resolveDelayMs: readEnvInt('SMOKE_RESOLVE_DELAY_MS', 2000),
+    timeoutMs: readEnvInt('SMOKE_TIMEOUT_MS', 10000),
+    label: process.env.SMOKE_LABEL || 'smoke',
+    includePrivacyChecks: !readEnvBool('SMOKE_SKIP_PRIVACY_CHECKS', false),
+    smokeTtlMs: DEFAULT_SMOKE_TTL_MS,
+    shortExpiryMs: readEnvInt('SMOKE_SHORT_EXPIRY_MS', 2500),
+    postPublishDelayMs: readEnvInt('SMOKE_POST_PUBLISH_DELAY_MS', 0),
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -59,6 +105,10 @@ function parseArgs(argv) {
         break;
       case '--short-expiry-ms':
         config.shortExpiryMs = parseInt(next, 10);
+        index += 1;
+        break;
+      case '--post-publish-delay-ms':
+        config.postPublishDelayMs = parseInt(next, 10);
         index += 1;
         break;
       case '--skip-privacy-checks':
@@ -139,6 +189,8 @@ async function run() {
     expectedSwarmCount: config.expectedSwarmCount,
     smokeTtlMs: config.smokeTtlMs,
     shortExpiryMs: config.shortExpiryMs,
+    includePrivacyChecks: config.includePrivacyChecks,
+    postPublishDelayMs: config.postPublishDelayMs,
   }));
 
   // Expiration-based cleanup strategy: every smoke page expires automatically.
@@ -172,6 +224,10 @@ async function run() {
   assert(publishBody.hash, 'publish response did not include hash');
   const hash = publishBody.hash;
   logStep('publish', `${hash}`);
+
+  if (config.postPublishDelayMs > 0) {
+    await sleep(config.postPublishDelayMs);
+  }
 
   const directPeerPage = await fetchWithTimeout(`${publishUrl}/page/${hash}`, {}, config.timeoutMs);
   const directPeerHtml = await directPeerPage.text();
