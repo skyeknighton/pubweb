@@ -973,6 +973,59 @@ class Tracker {
       return res.status(502).json({ error: lastError });
     });
 
+    this.app.post('/v1/purge-smoke', async (req, res) => {
+      const rateKey = `purge-proxy:${this.getClientIp(req)}`;
+      if (!this.checkRateLimit(rateKey, 30, 60_000)) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+
+      const candidates = this.getPublishCandidates();
+      if (candidates.length === 0) {
+        return res.status(503).json({ error: 'No active publish peers available' });
+      }
+
+      let lastError = 'No publish peer accepted purge request';
+      for (const peer of candidates) {
+        const publishTarget = this.buildPeerPublishUrl(peer);
+        if (!publishTarget) {
+          continue;
+        }
+
+        const target = publishTarget.replace(/\/publish$/, '/admin/purge-smoke');
+
+        try {
+          const headers: Record<string, string> = { 'content-type': 'application/json' };
+          const authHeader = req.get('authorization');
+          const adminTokenHeader = req.get('x-admin-token');
+          if (authHeader) {
+            headers.authorization = authHeader;
+          }
+          if (adminTokenHeader) {
+            headers['x-admin-token'] = adminTokenHeader;
+          }
+
+          const upstream = await fetch(target, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(req.body || {}),
+          });
+
+          const payload = await upstream.json().catch(() => ({})) as Record<string, unknown>;
+          if (!upstream.ok) {
+            const errorMessage = typeof payload.error === 'string' ? payload.error : '';
+            lastError = errorMessage || `Peer purge failed (${upstream.status})`;
+            continue;
+          }
+
+          return res.json(payload);
+        } catch (err) {
+          lastError = String(err || lastError);
+        }
+      }
+
+      return res.status(502).json({ error: lastError });
+    });
+
     this.app.post('/v1/peer/heartbeat', async (req, res) => {
       const rateKey = `heartbeat:${this.getClientIp(req)}`;
       if (!this.checkRateLimit(rateKey, 120, 60_000)) {
