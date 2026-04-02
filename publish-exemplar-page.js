@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const targetPeer = process.env.PUBLISH_URL || 'http://127.0.0.1:3001';
+const targetPeer = process.env.PUBLISH_URL || 'https://confident-success-production-8602.up.railway.app';
 const exemplarPath = path.join(__dirname, 'examples', 'exemplar-page.html');
 
 function normalizeBaseUrl(url) {

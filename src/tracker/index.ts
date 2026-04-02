@@ -1402,10 +1402,12 @@ class Tracker {
         .sort((a, b) => b.bytesUploaded - a.bytesUploaded)
         .slice(0, 20);
 
+      const now = Date.now();
+
       const topPages = siteHashes
         .map((hash) => {
           const peers = this.getActivePeersForHash(hash);
-          if (!this.isHashDiscoverable(hash, peers, Date.now())) {
+          if (!this.isHashDiscoverable(hash, peers, now)) {
             return null;
           }
           const title = peers
@@ -1430,6 +1432,38 @@ class Tracker {
         })
         .slice(0, 50);
 
+      // Network-wide stats: unlisted, expiring, next expiry
+      let unlistedCount = 0;
+      let expiringCount = 0;
+      let nextExpiryMs: number | null = null;
+      for (const hash of siteHashes) {
+        const peers = this.getActivePeersForHash(hash);
+        if (peers.length === 0) continue;
+        const mode = this.getFirstModeForHash(hash, peers);
+        if (mode === 'unlisted' || mode === 'private-link') {
+          unlistedCount++;
+        }
+        if (mode === 'expires') {
+          expiringCount++;
+          for (const peer of peers) {
+            const exp = peer.pageExpiresAt[hash];
+            if (typeof exp === 'number' && exp > now) {
+              if (nextExpiryMs === null || exp < nextExpiryMs) {
+                nextExpiryMs = exp;
+              }
+            }
+          }
+        }
+      }
+      const nextExpiryLabel = nextExpiryMs !== null
+        ? (() => {
+            const diffMs = nextExpiryMs - now;
+            const mins = Math.floor(diffMs / 60_000);
+            const secs = Math.floor((diffMs % 60_000) / 1000);
+            return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+          })()
+        : null;
+
       const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -1443,6 +1477,10 @@ class Tracker {
   <p><a href="/share-image">Mobile image share</a></p>
   <p><a class="onboard" href="/${this.onboardingHash}">Start here: Make your own page (download + publish loop)</a></p>
   <p><a class="shareimg" href="/share-image">Share image from phone</a></p>
+  <p style="color:#555;font-size:0.95em">
+    Unlisted pages: <strong>${unlistedCount}</strong> &nbsp;|&nbsp;
+    Expiring pages: <strong>${expiringCount}</strong>${nextExpiryLabel ? ` &nbsp;|&nbsp; Next expiry in: <strong>${nextExpiryLabel}</strong>` : ''}
+  </p>
 
   <h2>Top peers (by upload bytes today)</h2>
   <table>
