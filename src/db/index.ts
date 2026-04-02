@@ -47,6 +47,13 @@ export interface PageSummary {
   isEncrypted: boolean;
 }
 
+export interface PagePurgeCandidate {
+  id: string;
+  hash: string;
+  title: string;
+  created: number;
+}
+
 export type ShareMode = 'public' | 'unlisted' | 'private-link' | 'expires';
 export type ContentKind = 'html' | 'image-page';
 
@@ -544,6 +551,129 @@ export class Database {
         }
       );
     });
+  }
+
+  async findPagesByTitlePrefix(prefix: string, beforeTimestamp?: number, limit: number = 500): Promise<PagePurgeCandidate[]> {
+    const normalizedPrefix = String(prefix || '').trim();
+    const cappedLimit = Math.max(1, Math.min(limit, 2000));
+    if (!normalizedPrefix) {
+      return [];
+    }
+
+    const hasBefore = typeof beforeTimestamp === 'number' && Number.isFinite(beforeTimestamp);
+    const query = hasBefore
+      ? `SELECT id, hash, title, created
+         FROM pages
+         WHERE title LIKE ? AND created < ?
+         ORDER BY created ASC
+         LIMIT ?`
+      : `SELECT id, hash, title, created
+         FROM pages
+         WHERE title LIKE ?
+         ORDER BY created ASC
+         LIMIT ?`;
+    const args = hasBefore
+      ? [`${normalizedPrefix}%`, beforeTimestamp, cappedLimit]
+      : [`${normalizedPrefix}%`, cappedLimit];
+
+    return new Promise((resolve, reject) => {
+      this.db.all(query, args, (err, rows: Array<{ id: string; hash: string; title: string; created: number }>) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        resolve((rows || []).map((row) => ({
+          id: row.id,
+          hash: row.hash,
+          title: row.title || '',
+          created: row.created || 0,
+        })));
+      });
+    });
+  }
+
+  async deletePagesByHashes(hashes: string[]): Promise<number> {
+    const uniqueHashes = Array.from(new Set((hashes || []).filter((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/i.test(hash))));
+    if (uniqueHashes.length === 0) {
+      return 0;
+    }
+
+    const placeholders = uniqueHashes.map(() => '?').join(',');
+    const pageIds = await new Promise<string[]>((resolve, reject) => {
+      this.db.all(
+        `SELECT id FROM pages WHERE hash IN (${placeholders})`,
+        uniqueHashes,
+        (err, rows: Array<{ id: string }>) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve((rows || []).map((row) => row.id));
+        }
+      );
+    });
+
+    const idPlaceholders = pageIds.map(() => '?').join(',');
+
+    await new Promise<void>((resolve, reject) => {
+      this.db.serialize(() => {
+        this.db.run('BEGIN TRANSACTION');
+        this.db.run(
+          `DELETE FROM downloads WHERE pageHash IN (${placeholders})`,
+          uniqueHashes,
+          (downloadsErr) => {
+            if (downloadsErr) {
+              this.db.run('ROLLBACK');
+              reject(downloadsErr);
+              return;
+            }
+
+            const deleteUploads = (callback: (err?: Error | null) => void) => {
+              if (pageIds.length === 0) {
+                callback(null);
+                return;
+              }
+              this.db.run(
+                `DELETE FROM uploads WHERE pageId IN (${idPlaceholders})`,
+                pageIds,
+                callback
+              );
+            };
+
+            deleteUploads((uploadsErr) => {
+              if (uploadsErr) {
+                this.db.run('ROLLBACK');
+                reject(uploadsErr);
+                return;
+              }
+
+              this.db.run(
+                `DELETE FROM pages WHERE hash IN (${placeholders})`,
+                uniqueHashes,
+                (pagesErr) => {
+                  if (pagesErr) {
+                    this.db.run('ROLLBACK');
+                    reject(pagesErr);
+                    return;
+                  }
+
+                  this.db.run('COMMIT', (commitErr) => {
+                    if (commitErr) {
+                      reject(commitErr);
+                      return;
+                    }
+                    resolve();
+                  });
+                }
+              );
+            });
+          }
+        );
+      });
+    });
+
+    return uniqueHashes.length;
   }
 
   close(): void {

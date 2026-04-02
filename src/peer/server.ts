@@ -115,6 +115,7 @@ class PeerServer {
   private signerPrivateKey: string;
   private signerPublicKey: string;
   private requestCounters: Map<string, { count: number; resetAt: number }> = new Map();
+  private adminToken: string;
 
   public port: number = 3000;
   public isListening: boolean = false;
@@ -136,7 +137,23 @@ class PeerServer {
     this.maxPageBytes = Number.isFinite(configuredMaxPageBytes) && configuredMaxPageBytes > 0
       ? configuredMaxPageBytes
       : DEFAULT_MAX_PAGE_BYTES;
+    this.adminToken = String(process.env.PEER_ADMIN_TOKEN || process.env.ADMIN_TOKEN || '').trim();
     this.setupRoutes();
+  }
+
+  private isAdminAuthorized(req: express.Request): boolean {
+    if (!this.adminToken) {
+      return false;
+    }
+
+    const headerToken = String(req.get('x-admin-token') || '').trim();
+    const authHeader = String(req.get('authorization') || '').trim();
+    const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    const bodyToken = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+
+    return headerToken === this.adminToken || bearerToken === this.adminToken || bodyToken === this.adminToken;
   }
 
   private getClientIp(req: express.Request): string {
@@ -583,6 +600,53 @@ class PeerServer {
         bytesUploaded: stats.bytesUploaded,
         bytesDownloaded: stats.bytesDownloaded,
         shareUrl: this.publicBaseUrl || `http://localhost:${this.port}/page/`,
+      });
+    });
+
+    // Purge endpoint for old smoke-test pages.
+    this.app.post('/admin/purge-smoke', async (req, res) => {
+      const titlePrefix = typeof req.body?.titlePrefix === 'string' && req.body.titlePrefix.trim()
+        ? req.body.titlePrefix.trim()
+        : 'PubWeb smoke';
+
+      // If no admin token is configured, allow only constrained smoke-prefix purges.
+      if (this.adminToken && !this.isAdminAuthorized(req)) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      if (!this.adminToken && titlePrefix !== 'PubWeb smoke') {
+        return res.status(403).json({ error: 'Only default smoke prefix purge is allowed without admin token' });
+      }
+
+      const dryRun = req.body?.dryRun === true;
+      const maxAgeMs = typeof req.body?.maxAgeMs === 'number'
+        ? req.body.maxAgeMs
+        : parseInt(String(req.body?.maxAgeMs || ''), 10);
+      const limitInput = typeof req.body?.limit === 'number'
+        ? req.body.limit
+        : parseInt(String(req.body?.limit || '500'), 10);
+      const limit = Number.isFinite(limitInput) ? Math.max(1, Math.min(limitInput, 2000)) : 500;
+      const beforeTimestamp = Number.isFinite(maxAgeMs) && maxAgeMs > 0
+        ? Date.now() - maxAgeMs
+        : undefined;
+
+      const candidates = await this.db.findPagesByTitlePrefix(titlePrefix, beforeTimestamp, limit);
+      const hashes = candidates.map((candidate) => candidate.hash);
+
+      if (!dryRun && hashes.length > 0) {
+        await this.db.deletePagesByHashes(hashes);
+        this.pages = new Set(await this.db.getPageHashes(2000));
+        this.peerCount = this.pages.size;
+        await this.announceTracker();
+      }
+
+      return res.json({
+        success: true,
+        dryRun,
+        titlePrefix,
+        beforeTimestamp,
+        limit,
+        count: hashes.length,
+        hashes,
       });
     });
 
