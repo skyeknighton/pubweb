@@ -288,6 +288,10 @@ class Tracker {
     return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
   }
 
+  private isSmokeTitle(title: string): boolean {
+    return String(title || '').toLowerCase().startsWith('pubweb smoke');
+  }
+
   private getDisplayHost(peer: TrackerEntry): string {
     if (peer.observedIp && this.isLocalHost(peer.host)) {
       return peer.observedIp;
@@ -1261,6 +1265,7 @@ class Tracker {
           };
         })
         .filter((item): item is { hash: string; title: string; copies: number; pageVisits: number; latestSeen: number; url: string; mode: ShareMode } => !!item)
+        .filter((item) => !this.isSmokeTitle(item.title))
         .filter((item) => {
           if (!q) {
             return true;
@@ -1416,6 +1421,7 @@ class Tracker {
         })
           .filter((page): page is { hash: string; title: string; copies: number; pageVisits: number; mode: ShareMode } => !!page)
           .filter((page) => page.copies > 0 && page.mode !== 'private-link' && page.mode !== 'unlisted')
+        .filter((page) => !this.isSmokeTitle(page.title))
         .sort((a, b) => {
           if (b.pageVisits !== a.pageVisits) {
             return b.pageVisits - a.pageVisits;
