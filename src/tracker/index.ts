@@ -708,7 +708,7 @@ class Tracker {
       return { dataUrl: out, width, height, bytes, mimeType: 'image/jpeg' };
     }
 
-    function buildImagePageHtml(title, caption, dataUrl, hashHint) {
+    function buildImagePageHtml(title, caption, dataUrl) {
       const safeTitle = (title || 'PubWeb Image').replace(/[<>]/g, '');
       const safeCaption = (caption || '').replace(/[<>]/g, '');
       const captionHtml = safeCaption ? '<div class="cap">' + safeCaption + '</div>' : '';
@@ -718,17 +718,16 @@ class Tracker {
         '<style>' +
         'body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#171312;color:#f8efe8;}' +
         '.top{position:sticky;top:0;z-index:2;background:#201916d9;backdrop-filter:blur(8px);padding:10px 12px;border-bottom:1px solid #3c302a;}' +
-        '.t{font-size:14px;font-weight:700;}.m{font-size:11px;opacity:.78;word-break:break-all;margin-top:2px;}' +
+        '.top-row{display:flex;justify-content:space-between;align-items:center;gap:10px;}' +
+        '.t{font-size:14px;font-weight:700;}' +
+        '.share-link{font-size:12px;color:#ffd6bd;text-decoration:none;border:1px solid #6b5244;border-radius:999px;padding:5px 9px;background:#2a1f1a;white-space:nowrap;}' +
         '.pic-wrap{padding:10px;display:flex;justify-content:center;align-items:center;}' +
         'img.main{max-width:100%;max-height:78vh;border-radius:10px;box-shadow:0 8px 26px rgba(0,0,0,.32);}' +
         '.cap{padding:0 12px 14px;color:#d8cbc2;font-size:13px;}' +
-        '.cta{padding:0 12px 16px;font-size:12px;opacity:.9;}' +
-        '.cta a{color:#ffc7a6;text-decoration:none;}' +
         '</style></head><body>' +
-        '<div class="top"><div class="t">' + safeTitle + '</div><div class="m">Hash: ' + hashHint + '</div></div>' +
+        '<div class="top"><div class="top-row"><div class="t">' + safeTitle + '</div><a class="share-link" href="https://pubweb.online/share-image">Share your own image</a></div></div>' +
         '<div class="pic-wrap"><img class="main" src="' + dataUrl + '" alt="Shared image" /></div>' +
         captionHtml +
-        '<div class="cta"><a href="/share-image">Share your own image</a></div>' +
         '</body></html>';
     }
 
@@ -746,8 +745,7 @@ class Tracker {
       try {
         const mode = modeInput.value;
         const compressed = await fileToCompressedDataUrl(file, qualityInput.value);
-        const hint = 'pending';
-        const html = buildImagePageHtml(titleInput.value.trim(), captionInput.value.trim(), compressed.dataUrl, hint);
+        const html = buildImagePageHtml(titleInput.value.trim(), captionInput.value.trim(), compressed.dataUrl);
         const payload = {
           html,
           title: titleInput.value.trim() || 'Shared image',
@@ -1348,9 +1346,10 @@ class Tracker {
     .title { font-size: 14px; opacity: .9; }
     .meta { font-size: 12px; opacity: .75; margin-top: 4px; word-break: break-all; }
     .top-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .share-link { border: 1px solid #34466f; border-radius: 999px; background: #182646; color: #dbe7ff; padding: 6px 10px; font-size: 12px; text-decoration: none; white-space: nowrap; }
+    .qr-slot { margin-top: 10px; }
     .qr-btn { border: 1px solid #34466f; border-radius: 999px; background: #182646; color: #dbe7ff; padding: 6px 10px; font-size: 12px; }
-    .qr-panel { display: none; margin-top: 10px; }
-    .qr-panel img { width: 170px; height: 170px; border-radius: 8px; border: 1px solid #314971; background: white; }
+    .qr-img { display: none; width: 170px; height: 170px; border-radius: 8px; border: 1px solid #314971; background: white; }
     .status { padding: 16px; font-size: 14px; }
     .frame-wrap { flex: 1 1 auto; min-height: 0; display: none; }
     iframe { width: 100%; height: 100%; min-height: 0; border: 0; background: white; }
@@ -1367,10 +1366,11 @@ class Tracker {
           <div class="meta">Hash: ${hash}</div>
           <div class="meta">Wrapper version: ${this.escapeHtml(this.wrapperVersion)}</div>
         </div>
-        <button class="qr-btn" id="qrToggle" type="button">Share QR</button>
+        <a class="share-link" href="https://pubweb.online/share-image">Share image</a>
       </div>
-      <div class="qr-panel" id="qrPanel">
-        <img id="qrImage" alt="Shareable QR" />
+      <div class="qr-slot" id="qrSlot">
+        <button class="qr-btn" id="qrToggle" type="button">Share QR</button>
+        <img class="qr-img" id="qrImage" alt="Shareable QR" />
       </div>
     </div>
     <div class="status" id="statusText">Locating content across the network<span class="dot"></span></div>
@@ -1385,14 +1385,18 @@ class Tracker {
     const frameWrap = document.getElementById('frameWrap');
     const frame = document.getElementById('siteFrame');
     const qrToggle = document.getElementById('qrToggle');
-    const qrPanel = document.getElementById('qrPanel');
     const qrImage = document.getElementById('qrImage');
     window.__pubwebWrapperVersion = wrapperVersion;
 
-    const shareUrl = window.location.origin + '/' + hash;
     qrImage.src = '/qr/' + hash + '.svg?size=260';
     qrToggle.addEventListener('click', () => {
-      qrPanel.style.display = qrPanel.style.display === 'block' ? 'none' : 'block';
+      const showing = qrImage.style.display === 'block';
+      qrImage.style.display = showing ? 'none' : 'block';
+      qrToggle.style.display = showing ? 'inline-block' : 'none';
+    });
+    qrImage.addEventListener('click', () => {
+      qrImage.style.display = 'none';
+      qrToggle.style.display = 'inline-block';
     });
 
     function installExternalLinkEscape() {
