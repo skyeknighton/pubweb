@@ -727,12 +727,12 @@ class Tracker {
       return out;
     }
 
-    async function encryptDataUrl(dataUrl) {
+    async function encryptPayloadText(plainText) {
       const encoder = new TextEncoder();
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const keyBytes = crypto.getRandomValues(new Uint8Array(32));
       const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
-      const cipherBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(dataUrl));
+      const cipherBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(String(plainText || '')));
       const cipherBytes = new Uint8Array(cipherBuffer);
       return {
         iv: toBase64Url(iv),
@@ -749,14 +749,20 @@ class Tracker {
       const imageMarkup = isEncrypted
         ? '<div class="locked" id="lockedBox">Private link required. Open with full link containing #k=...</div><img class="main" id="mainImage" alt="Shared image" style="display:none;" />'
         : '<img class="main" src="' + pageData.dataUrl + '" alt="Shared image" />';
+      const titleMarkup = isEncrypted
+        ? '<div class="t" id="titleText">Private image</div>'
+        : '<div class="t">' + safeTitle + '</div>';
+      const extraCaptionMarkup = isEncrypted
+        ? '<div class="cap" id="captionBox" style="display:none;"></div>'
+        : captionHtml;
       const decryptScript = isEncrypted
         ? '<script>' +
           'const ivB64=' + JSON.stringify(pageData.iv) + ';' +
           'const cipherB64=' + JSON.stringify(pageData.cipher) + ';' +
           'const keyParam=(new URLSearchParams((location.hash||"#").slice(1))).get("k")||"";' +
-          'const lock=document.getElementById("lockedBox");const img=document.getElementById("mainImage");' +
+          'const lock=document.getElementById("lockedBox");const img=document.getElementById("mainImage");const titleNode=document.getElementById("titleText");const captionNode=document.getElementById("captionBox");' +
           'function fromB64Url(s){const chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";let bits=0,v=0,o=[];for(let i=0;i<s.length;i++){const idx=chars.indexOf(s[i]);if(idx<0)continue;v=(v<<6)|idx;bits+=6;if(bits>=8){bits-=8;o.push((v>>bits)&255);}}return new Uint8Array(o);}' +
-          'async function decrypt(){if(!keyParam){return;}try{const keyBytes=fromB64Url(keyParam);const iv=fromB64Url(ivB64);const data=fromB64Url(cipherB64);const key=await crypto.subtle.importKey("raw",keyBytes,"AES-GCM",false,["decrypt"]);const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,data);const text=new TextDecoder().decode(plain);img.src=text;img.style.display="block";if(lock)lock.style.display="none";}catch(e){if(lock)lock.textContent="Unable to decrypt. Verify you opened the full private link.";}}decrypt();' +
+          'async function decrypt(){if(!keyParam){return;}try{const keyBytes=fromB64Url(keyParam);const iv=fromB64Url(ivB64);const data=fromB64Url(cipherB64);const key=await crypto.subtle.importKey("raw",keyBytes,"AES-GCM",false,["decrypt"]);const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,data);const text=new TextDecoder().decode(plain);let parsed=null;try{parsed=JSON.parse(text);}catch(_e){}const imageData=(parsed&&parsed.dataUrl)?parsed.dataUrl:text;if(parsed&&parsed.title&&titleNode){titleNode.textContent=String(parsed.title).slice(0,120);}if(parsed&&parsed.caption&&captionNode){captionNode.textContent=String(parsed.caption).slice(0,240);captionNode.style.display="block";}img.src=imageData;img.style.display="block";if(lock)lock.style.display="none";}catch(e){if(lock)lock.textContent="Unable to decrypt. Verify you opened the full private link.";}}decrypt();' +
           '<' + '/script>'
         : '';
       return '<!doctype html>' +
@@ -773,9 +779,9 @@ class Tracker {
         '.locked{padding:16px;border:1px dashed #7b5f51;border-radius:10px;color:#e9cec0;background:#2a1d18;font-size:13px;}' +
         '.cap{padding:0 12px 14px;color:#d8cbc2;font-size:13px;}' +
         '</style></head><body>' +
-        '<div class="top"><div class="top-row"><div class="t">' + safeTitle + '</div><a class="share-link" href="https://pubweb.online/share-image">Share your own image</a></div></div>' +
+        '<div class="top"><div class="top-row">' + titleMarkup + '<a class="share-link" href="https://pubweb.online/share-image">Share your own image</a></div></div>' +
         '<div class="pic-wrap">' + imageMarkup + '</div>' +
-        captionHtml +
+        extraCaptionMarkup +
         decryptScript +
         '</body></html>';
     }
@@ -793,18 +799,24 @@ class Tracker {
 
       try {
         const mode = modeInput.value;
+        const rawTitle = titleInput.value.trim() || 'Shared image';
+        const rawCaption = captionInput.value.trim();
         const compressed = await fileToCompressedDataUrl(file, qualityInput.value);
         const needsPrivatePayload = mode === 'private-link' || mode === 'expires';
         const encryptedPayload = needsPrivatePayload
-          ? await encryptDataUrl(compressed.dataUrl)
+          ? await encryptPayloadText(JSON.stringify({
+            title: rawTitle,
+            caption: rawCaption,
+            dataUrl: compressed.dataUrl,
+          }))
           : null;
         const pageData = encryptedPayload
           ? { cipher: encryptedPayload.cipher, iv: encryptedPayload.iv }
           : { dataUrl: compressed.dataUrl };
-        const html = buildImagePageHtml(titleInput.value.trim(), captionInput.value.trim(), pageData);
+        const html = buildImagePageHtml(rawTitle, rawCaption, pageData);
         const payload = {
           html,
-          title: titleInput.value.trim() || 'Shared image',
+          title: needsPrivatePayload ? 'Private image' : rawTitle,
           tags: ['image', 'mobile'],
           shareMode: mode,
           contentKind: 'image-page',
