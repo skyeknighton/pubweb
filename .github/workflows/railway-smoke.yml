@@ -49,4 +49,11 @@ jobs:
           SMOKE_POST_PUBLISH_DELAY_MS: ${{ vars.PUBWEB_SMOKE_POST_PUBLISH_DELAY_MS || '2000' }}
           SMOKE_MAX_AGE_SEC: ${{ vars.PUBWEB_SMOKE_MAX_AGE_SEC || '900' }}
           SMOKE_EXPIRES_IN_MINUTES: ${{ vars.PUBWEB_SMOKE_EXPIRES_IN_MINUTES || '15' }}
-        run: npm run smoke:railway
+          SMOKE_RETRY_DELAY_SECONDS: ${{ vars.PUBWEB_SMOKE_RETRY_DELAY_SECONDS || '180' }}
+        run: |
+          npm run smoke:railway || {
+            echo "Smoke failed on first attempt; waiting ${SMOKE_RETRY_DELAY_SECONDS}s before retry..."
+            sleep "$SMOKE_RETRY_DELAY_SECONDS"
+            npm run wait:railway
+            npm run smoke:railway
+          }
