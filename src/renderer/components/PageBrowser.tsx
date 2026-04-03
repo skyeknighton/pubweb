@@ -4,11 +4,16 @@ export const PageBrowser: React.FC<{ pages: any[]; publicBaseUrl?: string }> = (
   const baseUrl = (publicBaseUrl || 'http://localhost:3000').replace(/\/+$/, '');
 
   return (
-    <div className="page-browser">
-      <h2>Browse Pages</h2>
+    <section className="page-browser compact-panel">
+      <div className="panel-header">
+        <div>
+          <h2>Stored Pages</h2>
+          <p>Pages currently available from this desktop client.</p>
+        </div>
+      </div>
 
       {pages.length === 0 ? (
-        <p className="empty">No pages yet. Upload one to get started!</p>
+        <p className="empty">No local pages stored yet.</p>
       ) : (
         <div className="page-list">
           {pages.map((page) => (
@@ -33,12 +38,12 @@ export const PageBrowser: React.FC<{ pages: any[]; publicBaseUrl?: string }> = (
                   window.open(`${baseUrl}/page/${page.hash}`, '_blank');
                 }}
               >
-                View Page
+                Open Page
               </button>
             </div>
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 };

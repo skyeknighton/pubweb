@@ -68,103 +68,59 @@ export const StatusDashboard: React.FC<StatusDashboardProps> = ({
   const connectivity = getConnectivityBadge();
 
   return (
-    <div className="status-dashboard">
-      <h2>Network Status & Statistics</h2>
-
-      <div className="status-grid">
-        <div className="status-card">
-          <h3>Peer Info</h3>
-          {peerStatus ? (
-            <>
-              <p>
-                <strong>Status:</strong> <span className={peerStatus.isOnline ? 'online' : 'offline'}>
-                  {peerStatus.isOnline ? '🟢 Online' : '🔴 Offline'}
-                </span>
-              </p>
-              <p>
-                <strong>Port:</strong> {peerStatus.port}
-              </p>
-              <p>
-                <strong>Connected Peers:</strong> {peerStatus.peers}
-              </p>
-              <p>
-                <strong>Pages Hosting:</strong> {peerStatus.pageCount}
-              </p>
-              <p>
-                <strong>Connectivity:</strong>{' '}
-                <span className={`connectivity-badge ${connectivity.className}`}>{connectivity.label}</span>
-              </p>
-              <p>
-                <strong>NAT Type:</strong> {peerStatus.natType || 'unknown'}
-              </p>
-              <p>
-                <strong>Probe Status:</strong> {peerStatus.probeStatus || 'pending'}
-              </p>
-              <p>
-                <strong>Last Probe:</strong> {formatProbeTime(peerStatus.lastProbeAt)}
-              </p>
-              {peerStatus.publicBaseUrl && (
-                <p>
-                  <strong>Public URL:</strong> {peerStatus.publicBaseUrl}
-                </p>
-              )}
-              {peerStatus.lastProbeError && (
-                <p className="status-warning">
-                  <strong>Probe Note:</strong> {peerStatus.lastProbeError}
-                </p>
-              )}
-              <div className="status-actions">
-                <button
-                  className="status-btn"
-                  onClick={onRetryNatProbe}
-                  disabled={retryingNatProbe}
-                >
-                  {retryingNatProbe ? 'Retrying NAT Probe...' : 'Retry NAT Probe'}
-                </button>
-                <button
-                  className="status-btn secondary"
-                  onClick={handleCopyPublicUrl}
-                  disabled={!peerStatus.publicBaseUrl}
-                >
-                  Copy Public URL
-                </button>
-              </div>
-              {copyMessage && <p className="status-note">{copyMessage}</p>}
-            </>
-          ) : (
-            <p>Loading...</p>
-          )}
+    <section className="status-dashboard compact-panel">
+      <div className="panel-header">
+        <div>
+          <h2>Local Peer</h2>
+          <p>Your desktop node and network reachability.</p>
         </div>
-
-        <div className="status-card">
-          <h3>Your Stats Today</h3>
-          {stats ? (
-            <>
-              <p>
-                <strong>Uploaded:</strong> {formatBytes(stats.bytesUploaded)}
-              </p>
-              <p>
-                <strong>Downloaded:</strong> {formatBytes(stats.bytesDownloaded)}
-              </p>
-              <p>
-                <strong>Ratio:</strong>{' '}
-                {(stats.bytesUploaded / Math.max(stats.bytesDownloaded, 1)).toFixed(2)}
-              </p>
-              <p>
-                <strong>Pages:</strong> {stats.pagesHosted}
-              </p>
-            </>
-          ) : (
-            <p>Loading...</p>
-          )}
-        </div>
-
-        <div className="status-card">
-          <h3>Network Info</h3>
-          <p>Connecting to central tracker...</p>
-          <p>Check back soon for leaderboard position</p>
-        </div>
+        <span className={`connectivity-badge ${connectivity.className}`}>{connectivity.label}</span>
       </div>
-    </div>
+
+      {peerStatus ? (
+        <>
+          <div className="status-list">
+            <div className="status-row"><span>Status</span><strong className={peerStatus.isOnline ? 'online' : 'offline'}>{peerStatus.isOnline ? 'Online' : 'Offline'}</strong></div>
+            <div className="status-row"><span>Port</span><strong>{peerStatus.port}</strong></div>
+            <div className="status-row"><span>NAT type</span><strong>{peerStatus.natType || 'unknown'}</strong></div>
+            <div className="status-row"><span>Last probe</span><strong>{formatProbeTime(peerStatus.lastProbeAt)}</strong></div>
+            <div className="status-row"><span>Uploaded</span><strong>{stats ? formatBytes(stats.bytesUploaded) : '...'}</strong></div>
+            <div className="status-row"><span>Downloaded</span><strong>{stats ? formatBytes(stats.bytesDownloaded) : '...'}</strong></div>
+          </div>
+
+          {peerStatus.publicBaseUrl && (
+            <div className="status-url-box">
+              <span>Public URL</span>
+              <strong>{peerStatus.publicBaseUrl}</strong>
+            </div>
+          )}
+
+          {peerStatus.lastProbeError && (
+            <p className="status-warning">{peerStatus.lastProbeError}</p>
+          )}
+
+          <div className="status-actions">
+            <button
+              className="status-btn"
+              onClick={onRetryNatProbe}
+              disabled={retryingNatProbe}
+            >
+              {retryingNatProbe ? 'Retrying NAT Probe...' : 'Retry NAT Probe'}
+            </button>
+            <button
+              className="status-btn secondary"
+              onClick={handleCopyPublicUrl}
+              disabled={!peerStatus.publicBaseUrl}
+            >
+              Copy Public URL
+            </button>
+          </div>
+
+          {copyMessage && <p className="status-note">{copyMessage}</p>}
+        </>
+      ) : (
+        <p>Loading local peer status...</p>
+      )}
+    </section>
   );
 };

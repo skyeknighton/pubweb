@@ -6,8 +6,8 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background: linear-gradient(135deg, #1e1e2e 0%, #2d2d44 100%);
-  color: #e0e0e0;
+  background: #565656;
+  color: #e7e7e7;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -18,76 +18,125 @@ body {
 }
 
 .app {
-  display: flex;
-  flex-direction: column;
   min-height: 100vh;
 }
 
-.app-header {
-  background: linear-gradient(90deg, #0d47a1 0%, #1565c0 100%);
-  color: white;
-  padding: 2rem;
-  text-align: center;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-}
-
-.app-header h1 {
-  font-size: 2.5rem;
-  margin-bottom: 0.5rem;
-  font-weight: 700;
-}
-
-.app-header p {
-  font-size: 1rem;
-  opacity: 0.9;
-}
-
-.app-nav {
-  display: flex;
-  gap: 0;
-  background: #2a2a3a;
-  border-bottom: 2px solid #0d47a1;
-  padding: 0;
-}
-
-.app-nav button {
-  flex: 1;
-  padding: 1rem;
-  background: transparent;
-  color: #aaa;
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-  font-weight: 500;
-  transition: all 0.3s ease;
-  border-bottom: 3px solid transparent;
-}
-
-.app-nav button:hover {
-  background: rgba(13, 71, 161, 0.1);
-  color: #fff;
-}
-
-.app-nav button.active {
-  color: #64b5f6;
-  border-bottom-color: #0d47a1;
-  background: rgba(13, 71, 161, 0.1);
-}
-
 .app-content {
-  flex: 1;
   padding: 2rem;
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   width: 100%;
 }
 
-.app-footer {
-  text-align: center;
-  padding: 2rem;
-  color: #666;
-  border-top: 1px solid #444;
-  font-size: 0.9rem;
+.desktop-shell {
+  background: #4a4a4a;
+  border: 1px solid #636363;
+  border-radius: 20px;
+  padding: 1.5rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+
+.desktop-shell__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.desktop-shell__header h1 {
+  font-size: 2rem;
+  margin-bottom: 0.35rem;
+}
+
+.desktop-shell__header p {
+  color: #d0d0d0;
+}
+
+.desktop-shell__actions {
+  display: flex;
+  gap: 0.65rem;
+}
+
+.shell-btn {
+  border: 1px solid #858585;
+  background: #6b6b6b;
+  color: #f5f5f5;
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.shell-btn.secondary {
+  background: transparent;
+}
+
+.desktop-stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 1.25rem;
+}
+
+.desktop-stat {
+  background: #595959;
+  border: 1px solid #6d6d6d;
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+}
+
+.desktop-stat__label {
+  display: block;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #c8c8c8;
+  margin-bottom: 0.35rem;
+}
+
+.desktop-stat strong {
+  font-size: 1.3rem;
+}
+
+.desktop-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.desktop-side-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.compact-panel,
+.tracker-panel {
+  background: #555;
+  border: 1px solid #6d6d6d;
+  border-radius: 16px;
+  padding: 1.15rem;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  align-items: flex-start;
+}
+
+.panel-header h2,
+.tracker-panel h2 {
+  color: #fff;
+  margin-bottom: 0.25rem;
+}
+
+.panel-header p,
+.tracker-panel p {
+  color: #d2d2d2;
+  font-size: 0.92rem;
 }
 
 /* Forms */
@@ -173,42 +222,30 @@ body {
 }
 
 /* Page Browser */
-.page-browser h2 {
-  margin-bottom: 1.5rem;
-  color: #64b5f6;
-}
-
 .page-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1.5rem;
+  gap: 0.85rem;
 }
 
 .page-card {
-  background: #2a2a3a;
-  padding: 1.5rem;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  transition: all 0.3s ease;
+  background: #606060;
+  padding: 1rem;
+  border-radius: 12px;
+  border: 1px solid #757575;
   display: flex;
   flex-direction: column;
-}
-
-.page-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 20px rgba(13, 71, 161, 0.3);
 }
 
 .page-card h3 {
   margin-bottom: 0.5rem;
   color: #fff;
-  font-size: 1.1rem;
+  font-size: 1rem;
 }
 
 .page-card .meta {
   font-size: 0.85rem;
-  color: #888;
-  margin-bottom: 1rem;
+  color: #d0d0d0;
+  margin-bottom: 0.7rem;
 }
 
 .tags {
@@ -219,8 +256,8 @@ body {
 }
 
 .tag {
-  background: rgba(13, 71, 161, 0.2);
-  color: #64b5f6;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f2f2f2;
   padding: 0.25rem 0.75rem;
   border-radius: 20px;
   font-size: 0.8rem;
@@ -228,25 +265,23 @@ body {
 
 .page-card .size {
   font-size: 0.85rem;
-  color: #888;
-  margin-bottom: 1rem;
+  color: #d0d0d0;
+  margin-bottom: 0.9rem;
 }
 
 .view-btn {
-  background: #0d47a1;
+  background: #737373;
   color: white;
-  border: none;
-  padding: 0.75rem;
-  border-radius: 4px;
+  border: 1px solid #868686;
+  padding: 0.7rem;
+  border-radius: 8px;
   cursor: pointer;
   font-weight: 500;
-  transition: all 0.3s ease;
   margin-top: auto;
 }
 
 .view-btn:hover {
-  background: #1565c0;
-  transform: translateY(-2px);
+  background: #818181;
 }
 
 .empty {
@@ -257,38 +292,43 @@ body {
 }
 
 /* Status Dashboard */
-.status-dashboard h2 {
-  margin-bottom: 2rem;
-  color: #64b5f6;
-}
-
-.status-grid {
+.status-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.5rem;
+  gap: 0.65rem;
 }
 
-.status-card {
-  background: #2a2a3a;
-  padding: 1.5rem;
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  border-left: 4px solid #0d47a1;
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 0.45rem;
 }
 
-.status-card h3 {
-  margin-bottom: 1rem;
-  color: #64b5f6;
+.status-row span {
+  color: #d2d2d2;
 }
 
-.status-card p {
-  margin-bottom: 0.75rem;
-  font-size: 0.95rem;
-  color: #ccc;
-}
-
-.status-card strong {
+.status-row strong {
   color: #fff;
+}
+
+.status-url-box {
+  margin-top: 1rem;
+  padding: 0.8rem 0.9rem;
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 10px;
+}
+
+.status-url-box span {
+  display: block;
+  font-size: 0.8rem;
+  color: #d2d2d2;
+  margin-bottom: 0.35rem;
+}
+
+.status-url-box strong {
+  word-break: break-all;
 }
 
 .online {
@@ -331,14 +371,15 @@ body {
 
 .status-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.6rem;
   margin-top: 0.8rem;
 }
 
 .status-btn {
-  border: 1px solid #2f5aa8;
-  background: #1f3f7a;
-  color: #d6e7ff;
+  border: 1px solid #868686;
+  background: #6b6b6b;
+  color: #f3f3f3;
   padding: 0.45rem 0.75rem;
   border-radius: 6px;
   cursor: pointer;
@@ -346,8 +387,8 @@ body {
 }
 
 .status-btn.secondary {
-  background: #2a2a3a;
-  border-color: #4a4a62;
+  background: transparent;
+  border-color: #7c7c7c;
 }
 
 .status-btn:disabled {
@@ -365,34 +406,36 @@ body {
   margin-top: 0.6rem;
 }
 
-@media (max-width: 768px) {
-  .app-header h1 {
-    font-size: 1.8rem;
-  }
+.tracker-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+}
 
-  .app-nav {
+@media (max-width: 768px) {
+  .desktop-shell__header,
+  .panel-header {
     flex-direction: column;
   }
 
-  .app-nav button {
-    border-bottom: none;
-    border-left: 3px solid transparent;
+  .desktop-shell__actions,
+  .tracker-panel__actions,
+  .status-actions {
+    width: 100%;
   }
 
-  .app-nav button.active {
-    border-left-color: #0d47a1;
-    border-bottom: none;
+  .shell-btn,
+  .status-btn {
+    width: 100%;
+  }
+
+  .desktop-stats-row,
+  .desktop-grid {
+    grid-template-columns: 1fr;
   }
 
   .app-content {
     padding: 1rem;
-  }
-
-  .page-list {
-    grid-template-columns: 1fr;
-  }
-
-  .status-grid {
-    grid-template-columns: 1fr;
   }
 }
