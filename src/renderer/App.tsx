@@ -12,17 +12,21 @@ export const App: React.FC = () => {
   const [pages, setPages] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [peerStatus, setPeerStatus] = useState<any>(null);
+  const [networkStats, setNetworkStats] = useState<any>(null);
   const [retryingNatProbe, setRetryingNatProbe] = useState(false);
 
   useEffect(() => {
     loadPages();
     loadStats();
     loadPeerStatus();
+    loadNetworkStats();
     const statsInterval = setInterval(loadStats, 5000);
     const peerInterval = setInterval(loadPeerStatus, 5000);
+    const networkInterval = setInterval(loadNetworkStats, 30000);
     return () => {
       clearInterval(statsInterval);
       clearInterval(peerInterval);
+      clearInterval(networkInterval);
     };
   }, []);
 
@@ -39,6 +43,11 @@ export const App: React.FC = () => {
   const loadPeerStatus = async () => {
     const result = await window.chaosnet.getPeerStatus();
     setPeerStatus(result);
+  };
+
+  const loadNetworkStats = async () => {
+    const result = await window.chaosnet.getNetworkStats();
+    setNetworkStats(result);
   };
 
   const handleRetryNatProbe = async () => {
@@ -81,8 +90,12 @@ export const App: React.FC = () => {
               <strong>{pages.length}</strong>
             </div>
             <div className="desktop-stat">
-              <span className="desktop-stat__label">Connected peers</span>
-              <strong>{peerStatus?.peers ?? 0}</strong>
+              <span className="desktop-stat__label">Network peers</span>
+              <strong>{networkStats?.peerCount ?? '...'}</strong>
+            </div>
+            <div className="desktop-stat">
+              <span className="desktop-stat__label">Public pages</span>
+              <strong>{networkStats?.pageCount ?? '...'}</strong>
             </div>
             <div className="desktop-stat">
               <span className="desktop-stat__label">Port</span>

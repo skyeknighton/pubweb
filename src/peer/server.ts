@@ -5,7 +5,7 @@ import { ContentKind, Database, ShareMode } from '../db';
 
 const NatAPI = require('nat-api');
 
-const TRACKER_URL = process.env.TRACKER_URL || 'http://localhost:4000';
+const TRACKER_URL = process.env.TRACKER_URL || 'https://tracker.pubweb.online';
 const PEER_ID_SETTING_KEY = 'peer.identity.id';
 const PEER_PRIVATE_KEY_SETTING_KEY = 'peer.identity.privateKey';
 const PEER_PUBLIC_KEY_SETTING_KEY = 'peer.identity.publicKey';

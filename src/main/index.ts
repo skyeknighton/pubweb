@@ -170,7 +170,7 @@ app.on('ready', async () => {
       port: peerServer.port,
       peers: peerServer.peerCount,
       pageCount: await db.getPageCount(),
-      trackerUrl: process.env.TRACKER_URL || 'http://localhost:4000',
+      trackerUrl: process.env.TRACKER_URL || 'https://tracker.pubweb.online',
       reachable: reachability.reachable,
       relayRequired: reachability.relayRequired,
       natType: reachability.natType,
@@ -190,7 +190,7 @@ app.on('ready', async () => {
       port: peerServer.port,
       peers: peerServer.peerCount,
       pageCount: await db.getPageCount(),
-      trackerUrl: process.env.TRACKER_URL || 'http://localhost:4000',
+      trackerUrl: process.env.TRACKER_URL || 'https://tracker.pubweb.online',
       reachable: reachability.reachable,
       relayRequired: reachability.relayRequired,
       natType: reachability.natType,
@@ -200,6 +200,29 @@ app.on('ready', async () => {
       lastProbeAt: reachability.lastProbeAt,
       lastProbeError: reachability.lastProbeError,
     };
+  });
+
+  ipcMain.handle('get-network-stats', async () => {
+    const trackerBase = (process.env.TRACKER_URL || 'https://tracker.pubweb.online').replace(/\/+$/, '');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const [peersRes, discoverRes] = await Promise.all([
+        fetch(`${trackerBase}/peers`, { signal: controller.signal }),
+        fetch(`${trackerBase}/discover?limit=100`, { signal: controller.signal }),
+      ]);
+      const peersData = peersRes.ok ? (await peersRes.json() as { count?: number }) : null;
+      const discoverData = discoverRes.ok ? (await discoverRes.json() as { count?: number; items?: unknown[] }) : null;
+      return {
+        peerCount: typeof peersData?.count === 'number' ? peersData.count : null,
+        pageCount: discoverData?.items ? (discoverData.items as unknown[]).length : null,
+        trackerReachable: peersRes.ok,
+      };
+    } catch {
+      return { peerCount: null, pageCount: null, trackerReachable: false };
+    } finally {
+      clearTimeout(timeout);
+    }
   });
 });
 
