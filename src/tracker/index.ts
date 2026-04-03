@@ -714,10 +714,50 @@ class Tracker {
     const successBox = document.getElementById('successBox');
     const shareLink = document.getElementById('shareLink');
     const qrImg = document.getElementById('qrImg');
+    const MAX_PRIVATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+    function formatDateTimeLocal(ms) {
+      const dt = new Date(ms);
+      const year = dt.getFullYear();
+      const month = String(dt.getMonth() + 1).padStart(2, '0');
+      const day = String(dt.getDate()).padStart(2, '0');
+      const hour = String(dt.getHours()).padStart(2, '0');
+      const minute = String(dt.getMinutes()).padStart(2, '0');
+      return year + '-' + month + '-' + day + 'T' + hour + ':' + minute;
+    }
+
+    function applyExpiryBounds() {
+      const now = Date.now();
+      expiresInput.min = formatDateTimeLocal(now + 60_000);
+      expiresInput.max = formatDateTimeLocal(now + MAX_PRIVATE_TTL_MS);
+    }
+
+    function validateExpirySelection() {
+      if (modeInput.value !== 'expires' || !expiresInput.value) {
+        return true;
+      }
+
+      const now = Date.now();
+      const parsed = new Date(expiresInput.value).getTime();
+      const maxAllowed = now + MAX_PRIVATE_TTL_MS;
+      if (!Number.isFinite(parsed) || parsed <= now) {
+        statusEl.textContent = 'Expiry must be in the future.';
+        return false;
+      }
+      if (parsed > maxAllowed) {
+        statusEl.textContent = 'Expiry cannot be more than 7 days in the future.';
+        return false;
+      }
+      return true;
+    }
 
     modeInput.addEventListener('change', () => {
       expiresWrap.style.display = modeInput.value === 'expires' ? 'block' : 'none';
+      applyExpiryBounds();
     });
+
+    expiresInput.addEventListener('change', validateExpirySelection);
+    applyExpiryBounds();
 
     fileInput.addEventListener('change', () => {
       const file = fileInput.files && fileInput.files[0];
@@ -856,6 +896,9 @@ class Tracker {
 
       try {
         const mode = modeInput.value;
+        if (!validateExpirySelection()) {
+          return;
+        }
         const rawTitle = titleInput.value.trim() || 'Shared image';
         const rawCaption = captionInput.value.trim();
         const compressed = await fileToCompressedDataUrl(file, qualityInput.value);
@@ -903,7 +946,11 @@ class Tracker {
         shareLink.textContent = finalUrl;
         qrImg.src = '/qr/' + result.hash + '.svg?size=240' + (encryptedPayload ? '&k=' + encodeURIComponent(encryptedPayload.key) : '');
         successBox.style.display = 'block';
-        statusEl.textContent = 'Published. Share the link or scan the QR.';
+        const effectiveExpiresAt = Number(result.effectiveExpiresAt || result.expiresAt || 0);
+        const expiryLabel = Number.isFinite(effectiveExpiresAt) && effectiveExpiresAt > 0
+          ? ' Expires ' + new Date(effectiveExpiresAt).toLocaleString() + '.'
+          : '';
+        statusEl.textContent = 'Published. Share the link or scan the QR.' + expiryLabel;
       } catch (err) {
         statusEl.textContent = String(err && err.message ? err.message : err);
       } finally {

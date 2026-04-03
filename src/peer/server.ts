@@ -15,6 +15,7 @@ const MAX_DYNAMIC_PORT = 65535;
 const MAX_PORT_CANDIDATES = 20;
 const DEFAULT_MAX_PAGE_BYTES = 1_474_560;
 const DEFAULT_EXPIRED_CLEANUP_INTERVAL_MS = 60_000;
+const MAX_PRIVATE_PAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface PeerEndpoint {
   kind: 'public' | 'local';
@@ -84,6 +85,15 @@ function normalizeExpiresAt(value: unknown): number | undefined {
     return undefined;
   }
   return parsed;
+}
+
+function getMaxPrivateExpiry(shareMode: ShareMode, now: number): number | undefined {
+  const enforceLimit = shareMode === 'unlisted' || shareMode === 'private-link' || shareMode === 'expires';
+  if (!enforceLimit) {
+    return undefined;
+  }
+
+  return now + MAX_PRIVATE_PAGE_TTL_MS;
 }
 
 function pickRandomHighPort(): number {
@@ -578,11 +588,18 @@ class PeerServer {
       const finalTitle = (providedTitle || inferredTitle).replace(/\s+/g, ' ').trim().slice(0, 160);
       const created = Date.now();
       const shareMode = normalizeShareMode(rawShareMode);
-      const expiresAt = normalizeExpiresAt(rawExpiresAt);
+      const providedExpiresAt = normalizeExpiresAt(rawExpiresAt);
       const discoverable = typeof rawDiscoverable === 'boolean'
         ? rawDiscoverable
         : !(shareMode === 'unlisted' || shareMode === 'private-link');
       const contentKind = normalizeContentKind(rawContentKind);
+      const maxPrivateExpiry = getMaxPrivateExpiry(shareMode, created);
+      if (providedExpiresAt && maxPrivateExpiry && providedExpiresAt > maxPrivateExpiry) {
+        return res.status(400).json({
+          error: 'Expiry cannot be more than 7 days in the future for unlisted/private pages',
+        });
+      }
+      const expiresAt = providedExpiresAt ?? maxPrivateExpiry;
 
       if (expiresAt && expiresAt <= created) {
         return res.status(400).json({ error: 'Expiry must be in the future' });
@@ -631,6 +648,7 @@ class PeerServer {
         shareMode,
         discoverable,
         expiresAt,
+        effectiveExpiresAt: expiresAt,
         contentKind,
         isEncrypted: !!isEncrypted,
       });

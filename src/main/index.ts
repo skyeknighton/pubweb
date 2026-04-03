@@ -4,6 +4,7 @@ import { startPeerServer } from '../peer/server';
 import { ContentKind, Database, ShareMode } from '../db';
 
 const DEFAULT_MAX_PAGE_BYTES = 1_474_560;
+const MAX_PRIVATE_PAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function getMaxPageBytes(): number {
   const configuredMaxPageBytes = parseInt(process.env.PEER_MAX_PAGE_BYTES || '', 10);
@@ -32,6 +33,15 @@ function normalizeExpiresAt(value: unknown): number | undefined {
     return undefined;
   }
   return parsed;
+}
+
+function getMaxPrivateExpiry(shareMode: ShareMode, now: number): number | undefined {
+  const enforceLimit = shareMode === 'unlisted' || shareMode === 'private-link' || shareMode === 'expires';
+  if (!enforceLimit) {
+    return undefined;
+  }
+
+  return now + MAX_PRIVATE_PAGE_TTL_MS;
 }
 
 async function createWindow() {
@@ -100,12 +110,17 @@ app.on('ready', async () => {
     }
 
     const shareMode = normalizeShareMode(rawShareMode);
-    const expiresAt = normalizeExpiresAt(rawExpiresAt);
+    const providedExpiresAt = normalizeExpiresAt(rawExpiresAt);
     const discoverable = typeof rawDiscoverable === 'boolean'
       ? rawDiscoverable
       : !(shareMode === 'unlisted' || shareMode === 'private-link');
     const contentKind = normalizeContentKind(rawContentKind);
     const now = Date.now();
+    const maxPrivateExpiry = getMaxPrivateExpiry(shareMode, now);
+    if (providedExpiresAt && maxPrivateExpiry && providedExpiresAt > maxPrivateExpiry) {
+      throw new Error('Expiry cannot be more than 7 days in the future for unlisted/private pages');
+    }
+    const expiresAt = providedExpiresAt ?? maxPrivateExpiry;
 
     if (expiresAt && expiresAt <= now) {
       throw new Error('Expiry must be in the future');
@@ -125,7 +140,13 @@ app.on('ready', async () => {
       mediaHeight: typeof mediaHeight === 'number' ? mediaHeight : undefined,
       isEncrypted: !!isEncrypted,
     });
-    return { success: true, pageId };
+    return {
+      success: true,
+      pageId,
+      expiresAt,
+      effectiveExpiresAt: expiresAt,
+      shareMode,
+    };
   });
 
   ipcMain.handle('get-pages', async () => {
