@@ -61,8 +61,7 @@ export const App: React.FC = () => {
   };
 
   const openTracker = (path: string = '') => {
-    const trackerBase = String(peerStatus?.trackerUrl || 'https://tracker.pubweb.online').replace(/\/+$/, '');
-    window.open(`${trackerBase}${path}`, '_blank');
+    window.open(`https://tracker.pubweb.online${path}`, '_blank');
   };
 
   const ratio = stats
