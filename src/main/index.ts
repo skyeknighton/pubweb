@@ -60,7 +60,11 @@ async function createWindow() {
   const isDev = process.env.NODE_ENV === 'development';
   const startUrl = isDev
     ? 'http://localhost:3001'
-    : `file://${path.join(__dirname, '../renderer/index.html')}`;
+    : `file://${path.join(__dirname, '../../renderer/index.html')}`;
+
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, validatedURL) => {
+    console.error(`Window failed to load (${code}): ${description} -> ${validatedURL}`);
+  });
 
   mainWindow.loadURL(startUrl);
   Menu.setApplicationMenu(null);
