@@ -53,6 +53,7 @@ coverage/
 dist/
 build/
 .turbo/
+release/
 
 # Local SSH keys
 keys/
