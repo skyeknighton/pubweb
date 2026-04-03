@@ -1,6 +1,8 @@
 import React from 'react';
 
-export const PageBrowser: React.FC<{ pages: any[] }> = ({ pages }) => {
+export const PageBrowser: React.FC<{ pages: any[]; publicBaseUrl?: string }> = ({ pages, publicBaseUrl }) => {
+  const baseUrl = (publicBaseUrl || 'http://localhost:3000').replace(/\/+$/, '');
+
   return (
     <div className="page-browser">
       <h2>Browse Pages</h2>
@@ -28,7 +30,7 @@ export const PageBrowser: React.FC<{ pages: any[] }> = ({ pages }) => {
               <button
                 className="view-btn"
                 onClick={() => {
-                  window.open(`http://localhost:3000/page/${page.hash}`, '_blank');
+                  window.open(`${baseUrl}/page/${page.hash}`, '_blank');
                 }}
               >
                 View Page

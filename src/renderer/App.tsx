@@ -13,12 +13,19 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'upload' | 'browse' | 'status'>('browse');
   const [pages, setPages] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
+  const [peerStatus, setPeerStatus] = useState<any>(null);
+  const [retryingNatProbe, setRetryingNatProbe] = useState(false);
 
   useEffect(() => {
     loadPages();
     loadStats();
-    const interval = setInterval(loadStats, 5000);
-    return () => clearInterval(interval);
+    loadPeerStatus();
+    const statsInterval = setInterval(loadStats, 5000);
+    const peerInterval = setInterval(loadPeerStatus, 5000);
+    return () => {
+      clearInterval(statsInterval);
+      clearInterval(peerInterval);
+    };
   }, []);
 
   const loadPages = async () => {
@@ -29,6 +36,21 @@ export const App: React.FC = () => {
   const loadStats = async () => {
     const result = await window.chaosnet.getStats();
     setStats(result);
+  };
+
+  const loadPeerStatus = async () => {
+    const result = await window.chaosnet.getPeerStatus();
+    setPeerStatus(result);
+  };
+
+  const handleRetryNatProbe = async () => {
+    setRetryingNatProbe(true);
+    try {
+      const result = await window.chaosnet.retryNatProbe();
+      setPeerStatus(result);
+    } finally {
+      setRetryingNatProbe(false);
+    }
   };
 
   const handleUpload = async (data: any) => {
@@ -65,9 +87,16 @@ export const App: React.FC = () => {
       </nav>
 
       <main className="app-content">
-        {activeTab === 'browse' && <PageBrowser pages={pages} />}
+        {activeTab === 'browse' && <PageBrowser pages={pages} publicBaseUrl={peerStatus?.publicBaseUrl} />}
         {activeTab === 'upload' && <UploadForm onUpload={handleUpload} />}
-        {activeTab === 'status' && <StatusDashboard stats={stats} />}
+        {activeTab === 'status' && (
+          <StatusDashboard
+            stats={stats}
+            peerStatus={peerStatus}
+            onRetryNatProbe={handleRetryNatProbe}
+            retryingNatProbe={retryingNatProbe}
+          />
+        )}
       </main>
 
       <footer className="app-footer">

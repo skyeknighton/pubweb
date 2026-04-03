@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('chaosnet', {
   getPages: () => ipcRenderer.invoke('get-pages'),
   getStats: () => ipcRenderer.invoke('get-stats'),
   getPeerStatus: () => ipcRenderer.invoke('get-peer-status'),
+  retryNatProbe: () => ipcRenderer.invoke('retry-nat-probe'),
 });

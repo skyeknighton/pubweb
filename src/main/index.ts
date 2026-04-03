@@ -71,6 +71,8 @@ app.on('ready', async () => {
 
   // Start P2P server
   peerServer = await startPeerServer(db);
+  const startupReachability = peerServer.getReachabilityState();
+  console.log('Peer reachability on startup:', startupReachability);
 
   // Create window
   createWindow();
@@ -135,11 +137,39 @@ app.on('ready', async () => {
   });
 
   ipcMain.handle('get-peer-status', async () => {
+    const reachability = peerServer.getReachabilityState();
     return {
       isOnline: peerServer.isListening,
       port: peerServer.port,
       peers: peerServer.peerCount,
       pageCount: await db.getPageCount(),
+      reachable: reachability.reachable,
+      relayRequired: reachability.relayRequired,
+      natType: reachability.natType,
+      publicBaseUrl: reachability.publicBaseUrl,
+      mappedPort: reachability.mappedPort,
+      probeStatus: reachability.probeStatus,
+      lastProbeAt: reachability.lastProbeAt,
+      lastProbeError: reachability.lastProbeError,
+    };
+  });
+
+  ipcMain.handle('retry-nat-probe', async () => {
+    await peerServer.retryReachabilityProbe();
+    const reachability = peerServer.getReachabilityState();
+    return {
+      isOnline: peerServer.isListening,
+      port: peerServer.port,
+      peers: peerServer.peerCount,
+      pageCount: await db.getPageCount(),
+      reachable: reachability.reachable,
+      relayRequired: reachability.relayRequired,
+      natType: reachability.natType,
+      publicBaseUrl: reachability.publicBaseUrl,
+      mappedPort: reachability.mappedPort,
+      probeStatus: reachability.probeStatus,
+      lastProbeAt: reachability.lastProbeAt,
+      lastProbeError: reachability.lastProbeError,
     };
   });
 });

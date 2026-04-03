@@ -301,6 +301,70 @@ body {
   font-weight: 600;
 }
 
+.connectivity-badge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.connectivity-direct {
+  background: rgba(76, 175, 80, 0.2);
+  color: #8ee98f;
+}
+
+.connectivity-relay {
+  background: rgba(255, 193, 7, 0.2);
+  color: #ffd966;
+}
+
+.connectivity-local {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ffb74d;
+}
+
+.connectivity-offline {
+  background: rgba(244, 67, 54, 0.2);
+  color: #ff9f9a;
+}
+
+.status-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+
+.status-btn {
+  border: 1px solid #2f5aa8;
+  background: #1f3f7a;
+  color: #d6e7ff;
+  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.status-btn.secondary {
+  background: #2a2a3a;
+  border-color: #4a4a62;
+}
+
+.status-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status-warning {
+  color: #ffb8a2;
+}
+
+.status-note {
+  color: #8ee98f;
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+}
+
 @media (max-width: 768px) {
   .app-header h1 {
     font-size: 1.8rem;

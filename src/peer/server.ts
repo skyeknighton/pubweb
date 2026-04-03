@@ -65,6 +65,8 @@ interface RemotePageMeta {
   isEncrypted?: boolean;
 }
 
+type ReachabilityProbeStatus = 'pending' | 'success' | 'failed' | 'skipped';
+
 function normalizeShareMode(value: unknown): ShareMode {
   if (value === 'unlisted' || value === 'private-link' || value === 'expires') {
     return value;
@@ -119,6 +121,9 @@ class PeerServer {
   private requestCounters: Map<string, { count: number; resetAt: number }> = new Map();
   private adminToken: string;
   private expiredCleanupIntervalMs: number;
+  private reachabilityProbeStatus: ReachabilityProbeStatus = 'pending';
+  private reachabilityLastProbeAt: number | null = null;
+  private reachabilityLastError: string | null = null;
 
   public port: number = 3000;
   public isListening: boolean = false;
@@ -274,15 +279,68 @@ class PeerServer {
     };
   }
 
-  private async probeReachability(): Promise<void> {
-    if (process.env.DISABLE_NAT_PROBE === 'true' || this.publicBaseUrl) {
+  public getReachabilityState(): {
+    reachable: boolean;
+    relayRequired: boolean;
+    natType: string;
+    publicBaseUrl?: string;
+    mappedPort?: number;
+    probeStatus: ReachabilityProbeStatus;
+    lastProbeAt: number | null;
+    lastProbeError: string | null;
+  } {
+    const reachability = this.inferReachability();
+    return {
+      reachable: reachability.reachable,
+      relayRequired: reachability.relayRequired,
+      natType: this.announcedNatType,
+      publicBaseUrl: this.publicBaseUrl,
+      mappedPort: reachability.mappedPort,
+      probeStatus: this.reachabilityProbeStatus,
+      lastProbeAt: this.reachabilityLastProbeAt,
+      lastProbeError: this.reachabilityLastError,
+    };
+  }
+
+  public async retryReachabilityProbe(): Promise<void> {
+    await this.probeReachability(true);
+    if (this.isListening) {
+      await this.announceTracker();
+    }
+  }
+
+  private async probeReachability(force: boolean = false): Promise<void> {
+    this.reachabilityLastProbeAt = Date.now();
+    this.reachabilityLastError = null;
+
+    if (process.env.DISABLE_NAT_PROBE === 'true') {
+      this.reachabilityProbeStatus = 'skipped';
+      this.reachabilityLastError = 'NAT probe disabled by DISABLE_NAT_PROBE=true';
+      console.log('NAT probe skipped (disabled by environment).');
       return;
+    }
+
+    if (!force && this.publicBaseUrl) {
+      this.reachabilityProbeStatus = 'skipped';
+      console.log('NAT probe skipped (public base URL already configured).');
+      return;
+    }
+
+    if (this.natClient) {
+      try {
+        this.natClient.destroy();
+      } catch {
+        // Ignore NAT client cleanup errors between probe attempts.
+      }
+      this.natClient = null;
     }
 
     const currentHost = (this.publicHost || '').toLowerCase();
     if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
       this.reachable = true;
       this.relayRequired = false;
+      this.reachabilityProbeStatus = 'success';
+      console.log(`NAT probe not required (public host configured: ${this.publicHost}).`);
       return;
     }
 
@@ -323,12 +381,16 @@ class PeerServer {
       this.announcedNatType = 'upnp';
       this.reachable = true;
       this.relayRequired = false;
+      this.reachabilityProbeStatus = 'success';
       console.log(`NAT probe succeeded, mapped peer to ${this.publicBaseUrl}`);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       this.announcedNatType = process.env.NAT_TYPE || 'unknown';
       this.reachable = false;
       this.relayRequired = true;
-      console.warn('NAT probe failed, continuing as relay-required peer:', err);
+      this.reachabilityProbeStatus = 'failed';
+      this.reachabilityLastError = message;
+      console.warn(`NAT probe failed (${message}). Continuing in relay-required mode.`);
     }
   }
 
@@ -621,6 +683,9 @@ class PeerServer {
         natType: this.announcedNatType,
         reachable: this.reachable,
         relayRequired: this.relayRequired,
+        probeStatus: this.reachabilityProbeStatus,
+        lastProbeAt: this.reachabilityLastProbeAt,
+        lastProbeError: this.reachabilityLastError,
         endpoints: this.getAdvertisedEndpoints(),
         maxPageBytes: this.maxPageBytes,
         peers: this.peerCount,
