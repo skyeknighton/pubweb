@@ -122,7 +122,7 @@ function buildHtml() {
 
       <div class="grid">
         <div class="pill"><strong>Default storage:</strong> 1 GB</div>
-        <div class="pill"><strong>Default upload cap:</strong> 1 MB/s</div>
+        <div class="pill"><strong>Default upload cap:</strong> 10 KB/s</div>
         <div class="pill"><strong>Page cap:</strong> 1.44 MB per page</div>
         <div class="pill"><strong>Addressing:</strong> SHA-256 content hash</div>
       </div>
@@ -132,7 +132,7 @@ function buildHtml() {
       <h2>first page loop</h2>
       <ol>
         <li>Download and run the peer app from <a href="${latestReleaseUrl}">GitHub Releases</a>.</li>
-        <li>Choose your contribution defaults: <code>1 GB</code> disk and <code>1 MB/s</code> upload.</li>
+        <li>Choose your contribution defaults: <code>1 GB</code> disk and <code>10 KB/s</code> upload.</li>
         <li>Create a self-contained HTML page (inline CSS/assets) and publish it.</li>
         <li>Copy your hash URL in the form <code>${trackerBase}/&lt;hash&gt;</code> and share it.</li>
         <li>Keep your peer online to seed your page and improve network resilience.</li>
