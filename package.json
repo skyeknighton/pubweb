@@ -1,6 +1,6 @@
 {
   "name": "pubweb",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "main": "dist/main/main/index.js",
   "description": "PubWeb - Decentralized webpage hosting with P2P distribution",
   "scripts": {
