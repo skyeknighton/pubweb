@@ -82,6 +82,7 @@ export const StatusDashboard: React.FC<StatusDashboardProps> = ({
           <div className="status-list">
             <div className="status-row"><span>Status</span><strong className={peerStatus.isOnline ? 'online' : 'offline'}>{peerStatus.isOnline ? 'Online' : 'Offline'}</strong></div>
             <div className="status-row"><span>Port</span><strong>{peerStatus.port}</strong></div>
+            <div className="status-row"><span>Tracker</span><strong>{peerStatus.trackerUrl || 'n/a'}</strong></div>
             <div className="status-row"><span>NAT type</span><strong>{peerStatus.natType || 'unknown'}</strong></div>
             <div className="status-row"><span>Last probe</span><strong>{formatProbeTime(peerStatus.lastProbeAt)}</strong></div>
             <div className="status-row"><span>Uploaded</span><strong>{stats ? formatBytes(stats.bytesUploaded) : '...'}</strong></div>

@@ -52,7 +52,8 @@ export const App: React.FC = () => {
   };
 
   const openTracker = (path: string = '') => {
-    window.open(`https://tracker.pubweb.online${path}`, '_blank');
+    const trackerBase = String(peerStatus?.trackerUrl || 'https://tracker.pubweb.online').replace(/\/+$/, '');
+    window.open(`${trackerBase}${path}`, '_blank');
   };
 
   const ratio = stats
@@ -104,6 +105,7 @@ export const App: React.FC = () => {
               <div className="tracker-panel">
                 <h2>Official Network</h2>
                 <p>Use the public tracker to view the shared network, open the dashboard, or jump into image sharing.</p>
+                <p><strong>Tracker URL:</strong> {peerStatus?.trackerUrl || 'loading...'}</p>
                 <div className="tracker-panel__actions">
                   <button className="shell-btn" onClick={() => openTracker('/network')}>Network Dashboard</button>
                   <button className="shell-btn secondary" onClick={() => openTracker('')}>Tracker Home</button>

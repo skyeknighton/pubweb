@@ -63,6 +63,8 @@ async function createWindow() {
     : `file://${path.join(__dirname, '../renderer/index.html')}`;
 
   mainWindow.loadURL(startUrl);
+  Menu.setApplicationMenu(null);
+  mainWindow.setMenuBarVisibility(false);
   mainWindow.show();
 
   if (isDev) {
@@ -164,6 +166,7 @@ app.on('ready', async () => {
       port: peerServer.port,
       peers: peerServer.peerCount,
       pageCount: await db.getPageCount(),
+      trackerUrl: process.env.TRACKER_URL || 'http://localhost:4000',
       reachable: reachability.reachable,
       relayRequired: reachability.relayRequired,
       natType: reachability.natType,
@@ -183,6 +186,7 @@ app.on('ready', async () => {
       port: peerServer.port,
       peers: peerServer.peerCount,
       pageCount: await db.getPageCount(),
+      trackerUrl: process.env.TRACKER_URL || 'http://localhost:4000',
       reachable: reachability.reachable,
       relayRequired: reachability.relayRequired,
       natType: reachability.natType,
