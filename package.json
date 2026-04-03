@@ -23,6 +23,7 @@
     "smoke:railway:auto": "npm run wait:railway && npm run smoke:railway",
     "purge:smoke": "node purge-smoke-pages.js --dry-run",
     "dist:win": "npm run build && electron-builder --win nsis portable --publish never",
+    "dist:win:local": "npm run build && electron-builder --win nsis portable --publish never --config.win.signAndEditExecutable=false",
     "test": "jest"
   },
   "dependencies": {
@@ -99,7 +100,11 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
     },
     "publish": [
       {
