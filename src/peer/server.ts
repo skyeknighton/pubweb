@@ -16,6 +16,7 @@ const MAX_PORT_CANDIDATES = 20;
 const DEFAULT_MAX_PAGE_BYTES = 1_474_560;
 const DEFAULT_EXPIRED_CLEANUP_INTERVAL_MS = 60_000;
 const MAX_PRIVATE_PAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_PUBLIC_PAGE_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 
 interface PeerEndpoint {
   kind: 'public' | 'local';
@@ -87,13 +88,15 @@ function normalizeExpiresAt(value: unknown): number | undefined {
   return parsed;
 }
 
-function getMaxPrivateExpiry(shareMode: ShareMode, now: number): number | undefined {
-  const enforceLimit = shareMode === 'unlisted' || shareMode === 'private-link' || shareMode === 'expires';
-  if (!enforceLimit) {
-    return undefined;
-  }
+function getMaxAllowedExpiry(shareMode: ShareMode, now: number): number {
+  const privateScoped = shareMode === 'unlisted' || shareMode === 'private-link';
+  return privateScoped
+    ? now + MAX_PRIVATE_PAGE_TTL_MS
+    : now + DEFAULT_PUBLIC_PAGE_TTL_MS;
+}
 
-  return now + MAX_PRIVATE_PAGE_TTL_MS;
+function getDefaultExpiry(shareMode: ShareMode, now: number): number {
+  return getMaxAllowedExpiry(shareMode, now);
 }
 
 function pickRandomHighPort(): number {
@@ -604,13 +607,16 @@ class PeerServer {
         ? rawDiscoverable
         : !(shareMode === 'unlisted' || shareMode === 'private-link');
       const contentKind = normalizeContentKind(rawContentKind);
-      const maxPrivateExpiry = getMaxPrivateExpiry(shareMode, created);
-      if (providedExpiresAt && maxPrivateExpiry && providedExpiresAt > maxPrivateExpiry) {
+      const maxAllowedExpiry = getMaxAllowedExpiry(shareMode, created);
+      if (providedExpiresAt && providedExpiresAt > maxAllowedExpiry) {
+        const privateMode = shareMode === 'unlisted' || shareMode === 'private-link';
         return res.status(400).json({
-          error: 'Expiry cannot be more than 7 days in the future for unlisted/private pages',
+          error: privateMode
+            ? 'Expiry cannot be more than 7 days in the future for unlisted/private pages'
+            : 'Expiry cannot be more than 10 years in the future for public pages',
         });
       }
-      const expiresAt = providedExpiresAt ?? maxPrivateExpiry;
+      const expiresAt = providedExpiresAt ?? getDefaultExpiry(shareMode, created);
 
       if (expiresAt && expiresAt <= created) {
         return res.status(400).json({ error: 'Expiry must be in the future' });
