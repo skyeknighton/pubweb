@@ -3,6 +3,22 @@ import React from 'react';
 export const PageBrowser: React.FC<{ pages: any[]; publicBaseUrl?: string }> = ({ pages, publicBaseUrl }) => {
   const baseUrl = (publicBaseUrl || 'http://localhost:3000').replace(/\/+$/, '');
 
+  const formatPageSize = (page: any) => {
+    const explicitSize = typeof page?.size === 'number' && Number.isFinite(page.size)
+      ? page.size
+      : null;
+    const htmlSize = typeof page?.html === 'string'
+      ? new TextEncoder().encode(page.html).length
+      : null;
+    const bytes = explicitSize ?? htmlSize;
+
+    if (bytes === null) {
+      return 'Unknown size';
+    }
+
+    return `Size: ${(bytes / 1024).toFixed(2)} KB`;
+  };
+
   return (
     <section className="page-browser compact-panel">
       <div className="panel-header">
@@ -31,11 +47,11 @@ export const PageBrowser: React.FC<{ pages: any[]; publicBaseUrl?: string }> = (
                   ))}
                 </div>
               )}
-              <p className="size">Size: {(page.size / 1024).toFixed(2)} KB</p>
+              <p className="size">{formatPageSize(page)}</p>
               <button
                 className="view-btn"
                 onClick={() => {
-                  window.open(`${baseUrl}/page/${page.hash}`, '_blank');
+                  void window.chaosnet.openExternal(`${baseUrl}/page/${page.hash}`);
                 }}
               >
                 Open Page

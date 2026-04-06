@@ -1,9 +1,15 @@
 const { Database } = require('./dist/main/db');
 const { startPeerServer } = require('./dist/main/peer/server');
+const fs = require('fs');
+const path = require('path');
 
 async function startPeer() {
   console.log('Initializing database...');
   const dbPath = process.env.PEER_DB_PATH || './pubweb.db';
+  const dbDir = path.dirname(dbPath);
+  if (dbDir && dbDir !== '.') {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
   const db = new Database(dbPath);
   await db.init();
   console.log('Database initialized');

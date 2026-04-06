@@ -61,7 +61,7 @@ export const App: React.FC = () => {
   };
 
   const openTracker = (path: string = '') => {
-    window.open(`https://tracker.pubweb.online${path}`, '_blank');
+    void window.chaosnet.openExternal(`https://tracker.pubweb.online${path}`);
   };
 
   const ratio = stats

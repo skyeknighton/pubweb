@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, ipcMain } from 'electron';
+import { shell } from 'electron';
 import path from 'path';
 import { startPeerServer } from '../peer/server';
 import { ContentKind, Database, ShareMode } from '../db';
@@ -64,6 +65,11 @@ async function createWindow() {
 
   mainWindow.webContents.on('did-fail-load', (_event, code, description, validatedURL) => {
     console.error(`Window failed to load (${code}): ${description} -> ${validatedURL}`);
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url);
+    return { action: 'deny' };
   });
 
   mainWindow.loadURL(startUrl);
@@ -223,6 +229,14 @@ app.on('ready', async () => {
     } finally {
       clearTimeout(timeout);
     }
+  });
+
+  ipcMain.handle('open-external', async (_event, url: unknown) => {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      throw new Error('Invalid external URL');
+    }
+
+    await shell.openExternal(url);
   });
 });
 

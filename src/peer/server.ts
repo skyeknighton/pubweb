@@ -461,22 +461,33 @@ class PeerServer {
       const pageSummaries = (await this.db.getPageSummaries(500))
         .filter((summary) => pages.includes(summary.hash))
         .filter((summary) => !summary.expiresAt || summary.expiresAt > now)
-        .map<AnnouncePageSummary>((summary) => ({
-          hash: summary.hash,
-          title: summary.title,
-          created: summary.created,
-          signerPeerId: summary.signerPeerId || this.peerId,
-          signature: summary.signature || '',
-          signerPublicKey: summary.signerPublicKey || this.signerPublicKey,
-          shareMode: summary.shareMode,
-          discoverable: summary.discoverable,
-          expiresAt: summary.expiresAt,
-          contentKind: summary.contentKind,
-          mimeType: summary.mimeType,
-          mediaWidth: summary.mediaWidth,
-          mediaHeight: summary.mediaHeight,
-          isEncrypted: summary.isEncrypted,
-        }));
+        .map<AnnouncePageSummary>((summary) => {
+          // If the stored signature is from a different peer ID (e.g. after a service
+          // restart that generated a new identity), re-sign with the current key so the
+          // tracker's signerPeerId === peerId check passes and the title is accepted.
+          const storedSignerPeerId = summary.signerPeerId || '';
+          const needsResign = !storedSignerPeerId || storedSignerPeerId !== this.peerId;
+          const signing = needsResign
+            ? this.createSignedPageManifest(summary.hash, summary.title, summary.created)
+            : { signerPeerId: storedSignerPeerId, signature: summary.signature || '', signerPublicKey: summary.signerPublicKey || this.signerPublicKey };
+
+          return {
+            hash: summary.hash,
+            title: summary.title,
+            created: summary.created,
+            signerPeerId: signing.signerPeerId,
+            signature: signing.signature,
+            signerPublicKey: signing.signerPublicKey,
+            shareMode: summary.shareMode,
+            discoverable: summary.discoverable,
+            expiresAt: summary.expiresAt,
+            contentKind: summary.contentKind,
+            mimeType: summary.mimeType,
+            mediaWidth: summary.mediaWidth,
+            mediaHeight: summary.mediaHeight,
+            isEncrypted: summary.isEncrypted,
+          };
+        });
       const reachability = this.inferReachability();
       console.log(`Announcing ${pages.length} pages to tracker at ${TRACKER_URL}`);
       const response = await fetch(`${TRACKER_URL.replace(/\/+$/, '')}/announce`, {
