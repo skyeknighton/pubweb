@@ -415,7 +415,7 @@ class Tracker {
     const cutoff = Date.now() - maxAgeMs;
     return Array.from(peerIds)
       .map((peerId) => this.peers.get(peerId))
-      .filter((peer): peer is TrackerEntry => !!peer && peer.lastSeen >= cutoff);
+      .filter((peer): peer is TrackerEntry => !!peer && peer.lastSeen >= cutoff && peer.pages.includes(hash));
   }
 
   private buildPeerPageUrl(peer: TrackerEntry, hash: string): string {
@@ -1254,8 +1254,28 @@ class Tracker {
         lastSeen: Date.now(),
       };
 
+      const previousPeer = this.peers.get(peerId);
       this.peers.set(peerId, peer);
       void this.probePeer(peer);
+
+      // Remove stale mappings for hashes this peer no longer advertises.
+      const announcedHashes = new Set(filteredPages);
+      for (const oldHash of previousPeer?.pages || []) {
+        if (announcedHashes.has(oldHash)) {
+          continue;
+        }
+
+        const indexedPeers = this.pageIndex.get(oldHash);
+        if (!indexedPeers) {
+          continue;
+        }
+
+        indexedPeers.delete(peerId);
+        if (indexedPeers.size === 0) {
+          this.pageIndex.delete(oldHash);
+          this.resolveCursor.delete(oldHash);
+        }
+      }
 
       // Update page index
       for (const pageHash of filteredPages) {
